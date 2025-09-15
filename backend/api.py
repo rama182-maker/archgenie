@@ -1,16 +1,19 @@
+# api.py
 import os
 import re
 import json
 import time
+import math
+import random
 import requests
 from typing import List, Dict, Any, Tuple, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# =========================
+# ==========================================================
 # Env & Config
-# =========================
+# ==========================================================
 load_dotenv()
 
 CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
@@ -24,29 +27,31 @@ AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() 
 USE_LIVE_AZURE_PRICES = os.getenv("USE_LIVE_AZURE_PRICES", "true").lower() == "true"
 HOURS_PER_MONTH = float(os.getenv("HOURS_PER_MONTH", "730"))
 
-# Default region if none provided by user
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "eastus")
 
-# App Gateway & Load Balancer defaults
-DEFAULT_APPGW_CAPACITY_UNITS = int(os.getenv("DEFAULT_APPGW_CAPACITY_UNITS", "1"))   # CU per hour
+DEFAULT_APPGW_CAPACITY_UNITS = int(os.getenv("DEFAULT_APPGW_CAPACITY_UNITS", "1"))
 DEFAULT_SQL_COMPUTE_ONLY     = os.getenv("DEFAULT_SQL_COMPUTE_ONLY", "true").lower() == "true"
-DEFAULT_LB_RULES             = int(os.getenv("DEFAULT_LB_RULES", "2"))               # rules per hour
-DEFAULT_LB_DATA_GB           = float(os.getenv("DEFAULT_LB_DATA_GB", "100"))         # GB processed per month
+DEFAULT_LB_RULES             = int(os.getenv("DEFAULT_LB_RULES", "2"))
+DEFAULT_LB_DATA_GB           = float(os.getenv("DEFAULT_LB_DATA_GB", "100"))
 
-# =========================
+# CORS
+origins_env = os.getenv("CORS_ALLOW_ORIGINS", "")
+ALLOW_ORIGINS = [o.strip() for o in origins_env.split(",") if o.strip()] or ["*"]
+
+# ==========================================================
 # Auth
-# =========================
+# ==========================================================
 def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-# =========================
+# ==========================================================
 # FastAPI
-# =========================
-app = FastAPI(title="ArchGenie Backend", version="7.6.0")
+# ==========================================================
+app = FastAPI(title="ArchGenie Backend", version="7.7.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
+    allow_origins=ALLOW_ORIGINS, allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
 
@@ -54,9 +59,65 @@ app.add_middleware(
 def health():
     return {"status": "ok", "message": "ArchGenie backend alive"}
 
-# =========================
+# ==========================================================
+# HTTP utils (retry/backoff)
+# ==========================================================
+def _sleep_backoff(attempt: int, base: float = 0.5, cap: float = 8.0):
+    # exponential backoff with jitter
+    delay = min(cap, base * (2 ** attempt)) * (0.5 + random.random() / 2.0)
+    time.sleep(delay)
+
+def http_post_json(url: str, headers: Dict[str, str], body: dict, max_retries: int = 4, timeout: int = 90):
+    last_err = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=timeout)
+            if resp.status_code < 300:
+                return resp
+            # retry on throttling/transient errors
+            if resp.status_code in (408, 409, 429, 500, 502, 503, 504):
+                last_err = resp
+                if attempt < max_retries:
+                    _sleep_backoff(attempt)
+                    continue
+            # otherwise hard fail
+            return resp
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                _sleep_backoff(attempt)
+                continue
+            raise
+    if isinstance(last_err, requests.Response):
+        return last_err
+    raise HTTPException(status_code=502, detail=f"POST failed: {last_err}")
+
+def http_get_json(url: str, params: Optional[dict] = None, max_retries: int = 4, timeout: int = 30):
+    last_err = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.status_code < 300:
+                return resp
+            if resp.status_code in (408, 409, 429, 500, 502, 503, 504):
+                last_err = resp
+                if attempt < max_retries:
+                    _sleep_backoff(attempt)
+                    continue
+            return resp
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                _sleep_backoff(attempt)
+                continue
+            raise
+    if isinstance(last_err, requests.Response):
+        return last_err
+    raise HTTPException(status_code=502, detail=f"GET failed: {last_err}")
+
+# ==========================================================
 # Azure OpenAI (MCP) client
-# =========================
+# ==========================================================
 def _aoai_configured() -> bool:
     return bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT)
 
@@ -70,15 +131,16 @@ def aoai_chat(messages: List[Dict[str, Any]], temperature: float = 0.2) -> Dict[
     headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_API_KEY}
     body = {"messages": messages, "temperature": temperature}
     if AZURE_OPENAI_FORCE_JSON:
+        # compatible JSON forcing
         body["response_format"] = {"type": "json_object"}
-    resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=90)
+    resp = http_post_json(url, headers=headers, body=body, max_retries=4, timeout=90)
     if resp.status_code >= 300:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
-# =========================
+# ==========================================================
 # Text helpers
-# =========================
+# ==========================================================
 def strip_fences(text: str) -> str:
     if not text:
         return ""
@@ -95,6 +157,7 @@ def strip_fences(text: str) -> str:
 def extract_json_or_fences(content: str) -> Dict[str, Any]:
     if not content:
         return {"diagram": "", "terraform": ""}
+    # JSON first
     try:
         obj = json.loads(content)
         return {
@@ -104,6 +167,7 @@ def extract_json_or_fences(content: str) -> Dict[str, Any]:
         }
     except Exception:
         pass
+    # Fallback: pull fenced code
     out = {"diagram": "", "terraform": ""}
     m = re.search(r"```mermaid\s*\n([\s\S]*?)```", content, flags=re.IGNORECASE)
     if m: out["diagram"] = m.group(1).strip()
@@ -111,53 +175,74 @@ def extract_json_or_fences(content: str) -> Dict[str, Any]:
     if m: out["terraform"] = m.group(2).strip()
     return out
 
-# =========================
-# Mermaid sanitizer
-# =========================
+# ==========================================================
+# Mermaid sanitizer + normalizer
+# ==========================================================
 def sanitize_mermaid(src: str) -> str:
     """
-    - subgraph "Title (region)" (no trailing ';')
-    - Edge lines end with ';', node lines do not
-    - '-. label .->' -> '-. |label| .->'
-    - Insert newline after node ']' or ')' if followed by token (fixes ']SP')
-    - Remove commas inside [] labels
+    Normalize to Mermaid 'flowchart TD' and fix common syntax issues:
+    - Accepts 'graph TD|LR' or 'flowchart TD|LR' and standardizes to 'flowchart TD'
+    - Removes trailing semicolons on node lines, ensures ';' on edge lines
+    - Converts '-. label .->' to '-. |label| .->'
+    - Quotes subgraph titles like: subgraph "Title (region)"
+    - Inserts newline after ']' or ')' if followed by token (fixes ']SP')
+    - Removes commas inside [label] text
     """
     if not src:
         return src
-    s = src
+
+    s = src.strip()
+
+    # Header -> flowchart TD
+    header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.IGNORECASE | re.MULTILINE)
+    m = header_re.search(s)
+    if m:
+        s = header_re.sub("flowchart TD", s, count=1)
+    else:
+        # If no header, prepend
+        s = "flowchart TD\n" + s
+
+    # subgraph "Title (xxx)"
     s = re.sub(r'^\s*subgraph\s+([^\[\n"]+)\s*\(([^)]+)\)\s*;?\s*$',
                r'subgraph "\1 (\2)"', s, flags=re.MULTILINE)
     s = re.sub(r'^(?P<hdr>\s*subgraph\b[^\n;]*?);+\s*$', r'\g<hdr>', s, flags=re.MULTILINE)
+
+    # '-. label .->' -> '-. |label| .->'
     s = re.sub(r'-\.\s+([^.|><\-\n][^.|><\-\n]*?)\s+\.\->', r'-. |\1| .->', s)
 
+    # Line-by-line cleanup: ensure edges end with ';', node lines do not
     out_lines: List[str] = []
     for line in s.splitlines():
-        stripped = line.rstrip().strip()
-        if not stripped:
+        stripped = line.rstrip()
+        just = stripped.strip()
+        if not just:
             out_lines.append("")
             continue
-        if stripped.startswith("subgraph") or stripped == "end":
-            out_lines.append(stripped)
+        if just.startswith("subgraph") or just == "end":
+            out_lines.append(just)
             continue
-        is_edge = ("--" in stripped) or (".->" in stripped) or ("---" in stripped)
+        is_edge = ("--" in just) or (".->" in just) or ("---" in just) or ("<->" in just)
         if is_edge:
-            if not stripped.endswith(";"):
-                stripped += ";"
-            out_lines.append(stripped)
+            if not just.endswith(";"):
+                just += ";"
+            out_lines.append(just)
         else:
-            out_lines.append(stripped.rstrip(";"))
+            out_lines.append(just.rstrip(";"))
     s = "\n".join(out_lines)
 
+    # Insert newline after ']' or ')' if immediately followed by token (fixes `]SP`)
     s = re.sub(r'(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))', r'\1\n', s)
-    s = re.sub(r'\[(.*?)\]', lambda m: f"[{m.group(1).replace(',', '')}]", s)
+
+    # Remove commas from node labels
+    s = re.sub(r'\[(.*?)\]', lambda m2: f"[{m2.group(1).replace(',', '')}]", s)
 
     if not s.endswith("\n"):
         s += "\n"
     return s
 
-# =========================
+# ==========================================================
 # Item normalization (ask/diagram/tf -> billable items)
-# =========================
+# ==========================================================
 def normalize_to_items(ask: str = "", diagram: str = "", tf: str = "", region: Optional[str] = None) -> List[dict]:
     region = region or DEFAULT_REGION
     items: List[dict] = []
@@ -169,24 +254,28 @@ def normalize_to_items(ask: str = "", diagram: str = "", tf: str = "", region: O
             d["size_gb"] = float(size_gb)
         items.append(d)
 
-    # Heuristics
+    # Web/App Service
     if re.search(r"\bapp service\b|\bweb app\b", blob):
         qty = 2 if re.search(r"\bfront.*back|backend.*front", blob) else 1
         add("azure", "app_service", "S1", qty=qty)
 
+    # SQL
     if re.search(r"\b(mssql|azure sql|sql database)\b", blob):
         add("azure", "azure_sql", "S0", qty=1)
         m = re.search(r"(\d+)\s*gb", blob)
         if m:
             items[-1]["size_gb"] = float(m.group(1))
 
+    # VMs
     vm_hits = len(re.findall(r"\bvmss\b|\bvm scale set\b|\bvirtual machine\b|\bvm\b", blob))
     if vm_hits:
         add("azure", "vm", "B2s", qty=vm_hits)
 
+    # Storage
     if re.search(r"\bstorage account\b|\bblob storage\b|\bazurerm_storage", blob):
         add("azure", "storage", "LRS", qty=1, size_gb=100)
 
+    # App Gateway / LB
     if re.search(r"\bapplication gateway\b|\bapp gateway\b|\bapp gw\b", blob):
         add("azure", "app_gateway", "WAF_v2", qty=1)
         m_cu = re.search(r"(\d+)\s*(?:capacity\s*units|cu)\b", blob)
@@ -201,20 +290,23 @@ def normalize_to_items(ask: str = "", diagram: str = "", tf: str = "", region: O
         if m_data and items:
             items[-1]["data_gb"] = float(m_data.group(1))
 
+    # Redis
     if "redis" in blob:
         add("azure", "redis", "C1", qty=1)
 
+    # AKS
     if "aks" in blob or "kubernetes service" in blob:
         add("azure", "aks", "standard", qty=1)
 
+    # Monitor
     if "application insights" in blob or "monitor" in blob or "log analytics" in blob:
         add("azure", "monitor", "LogAnalytics", qty=1)
 
     return items
 
-# =========================
+# ==========================================================
 # Azure Retail Prices — helpers
-# =========================
+# ==========================================================
 _price_cache: Dict[str, Tuple[Any, float]] = {}
 
 def cache_get(key: str):
@@ -226,7 +318,6 @@ def cache_get(key: str):
 def cache_put(key: str, value, ttl_sec: int = 3600):
     _price_cache[key] = (value, time.time() + ttl_sec)
 
-# Region variants map (ARM code -> Retail friendly names)
 _REGION_NAME_MAP = {
     "eastus": "US East",
     "eastus2": "US East 2",
@@ -260,7 +351,7 @@ def azure_retail_prices_fetch(filter_str: str, limit: int = 100) -> list:
     tries = 0
     while True:
         tries += 1
-        r = requests.get(url, params=params if url == base else None, timeout=30)
+        r = http_get_json(url, params=params if url == base else None, max_retries=2, timeout=30)
         if r.status_code >= 300:
             return []
         j = r.json()
@@ -282,7 +373,7 @@ def monthly_from_retail(item: Dict[str, Any]) -> float:
         return round(price * HOURS_PER_MONTH, 2)
     return round(price, 2)
 
-# ---- Robust price resolvers ----
+# ---- price resolvers (unchanged logic, more resilience) ----
 def azure_price_for_app_service_sku(sku: str, region: str) -> Optional[float]:
     key = f"az.appservice.{region}.{sku}"
     c = cache_get(key)
@@ -350,10 +441,6 @@ def azure_price_for_vm_size(size: str, region: str) -> Optional[float]:
     return best_price
 
 def azure_price_for_sql(sku: str, region: str) -> Optional[float]:
-    """
-    Resolve SQL Database Single DB (e.g., S0/S1/vCore) to a realistic monthly *compute* price.
-    Prefer hourly DTU/vCore/Compute meters; skip backup/storage/IO meters.
-    """
     key = f"az.sql.{region}.{sku}"
     c = cache_get(key)
     if c is not None:
@@ -424,14 +511,6 @@ def azure_price_for_storage_lrs_per_gb(region: str) -> Optional[float]:
     return best
 
 def azure_price_for_lb_components(region: str) -> Optional[Dict[str, float]]:
-    """
-    Resolve Standard Load Balancer component prices for a region.
-    Returns:
-      {
-        "rule_hour_monthly": $/rule/month   (from hourly "Rule" meters),
-        "data_gb_monthly":   $/GB/month     (from "Data Processed" meters)
-      }
-    """
     key = f"az.lb.standard.components.{region}"
     cached = cache_get(key)
     if cached:
@@ -499,10 +578,6 @@ def azure_price_for_lb_components(region: str) -> Optional[Dict[str, float]]:
     return comps
 
 def azure_price_for_appgw_wafv2_components(region: str) -> Optional[Dict[str, float]]:
-    """
-    Return {'base_monthly': ..., 'capacity_unit_monthly': ...} for App Gateway WAF_v2 in a region.
-    Prefer hourly meters; choose cheapest matching row for each component.
-    """
     key = f"az.appgw.wafv2.components.{region}"
     cached = cache_get(key)
     if cached:
@@ -602,9 +677,9 @@ def azure_price_for_log_analytics(region: str) -> Optional[float]:
         cache_put(key, best)
     return best
 
-# =========================
+# ==========================================================
 # Pricing Engine
-# =========================
+# ==========================================================
 def price_items(items: List[dict]) -> dict:
     currency = "USD"
     notes: List[str] = []
@@ -700,14 +775,26 @@ def price_items(items: List[dict]) -> dict:
         "items": out_items
     }
 
-# =========================
+# ==========================================================
 # Public Endpoints
-# =========================
+# ==========================================================
+@app.post("/mermaid/sanitize")
+def mermaid_sanitize(payload: dict = Body(...)):
+    """
+    FE helper: send {'diagram': '<mermaid>'} and receive {'diagram': '<fixed>'}
+    Always normalizes to `flowchart TD`.
+    """
+    src = (payload or {}).get("diagram") or ""
+    if not src:
+        raise HTTPException(status_code=400, detail="Missing 'diagram'")
+    fixed = sanitize_mermaid(src)
+    return {"diagram": fixed}
+
 @app.post("/mcp/azure/diagram-tf")
 def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
     """
-    Generate Azure architecture (diagram + Terraform) via Azure MCP (AOAI).
-    Strict: no local fallback. Returns sanitized diagram, terraform, and pricing.
+    Generate Azure architecture (diagram + Terraform) via AOAI.
+    Returns sanitized diagram (flowchart TD), terraform, and pricing.
     """
     if not _aoai_configured():
         raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
@@ -720,7 +807,7 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         "You are ArchGenie's Azure MCP.\n"
         "Return ONLY a single JSON object with keys:\n"
         '{\n'
-        '  "diagram": "Mermaid code starting with: graph TD (or graph LR)",\n'
+        '  "diagram": "Mermaid code starting with: graph TD or flowchart TD",\n'
         '  "terraform": "Valid Terraform HCL for Azure (resource group, app service plan, web apps, sql, etc.)"\n'
         '}\n'
         "Do not write explanations, backticks, or any other keys. JSON only."
@@ -748,11 +835,13 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
 
     if not diagram_raw:
         raise HTTPException(status_code=502, detail=f"Model did not return 'diagram'. Content: {content[:500]}")
-    if not diagram_raw.lower().startswith("graph "):
-        raise HTTPException(status_code=502, detail=f"'diagram' must start with 'graph'. Got: {diagram_raw[:120]}")
+    # Accept 'graph ' or 'flowchart '
+    if not (diagram_raw.lower().startswith("graph ") or diagram_raw.lower().startswith("flowchart ")):
+        raise HTTPException(status_code=502, detail=f"'diagram' must start with 'graph' or 'flowchart'. Got: {diagram_raw[:120]}")
     if not tf_raw:
         raise HTTPException(status_code=502, detail=f"Model did not return 'terraform'. Content: {content[:500]}")
 
+    # Normalize & sanitize to 'flowchart TD'
     diagram = sanitize_mermaid(diagram_raw)
     tf      = strip_fences(tf_raw)
 
@@ -765,7 +854,7 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
 @app.get("/mcp/aws/diagram-tf")
 def aws_mock(_=Depends(require_api_key)):
     return {
-        "diagram": """graph TD
+        "diagram": """flowchart TD
   subgraph AWS
     A[ALB] --> B[EC2: web-1];
     B --> C[RDS: archgenie-db];
@@ -787,7 +876,7 @@ resource "aws_s3_bucket" "assets" {
 @app.get("/mcp/gcp/diagram-tf")
 def gcp_mock(_=Depends(require_api_key)):
     return {
-        "diagram": """graph TD
+        "diagram": """flowchart TD
   subgraph GCP
     A[Load Balancer] --> B[Compute Engine: web-1];
     B --> C[Cloud SQL: archgenie-db];
