@@ -373,7 +373,7 @@ def monthly_from_retail(item: Dict[str, Any]) -> float:
         return round(price * HOURS_PER_MONTH, 2)
     return round(price, 2)
 
-# ---- price resolvers (unchanged logic, more resilience) ----
+# ---- price resolvers (resilient) ----
 def azure_price_for_app_service_sku(sku: str, region: str) -> Optional[float]:
     key = f"az.appservice.{region}.{sku}"
     c = cache_get(key)
@@ -536,7 +536,7 @@ def azure_price_for_lb_components(region: str) -> Optional[Dict[str, float]]:
         )
         items = azure_retail_prices_fetch(flt, limit=200)
 
-        hourly = [x for x in items if "hour" in (x.get("unitOfMeasure","").lower())]
+        hourly = [x for x in items if "hour" in (it := x).get("unitOfMeasure", "").lower()]
         for it in hourly:
             if is_rule_meter(it):
                 m = monthly_from_retail(it)
@@ -835,9 +835,10 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
 
     if not diagram_raw:
         raise HTTPException(status_code=502, detail=f"Model did not return 'diagram'. Content: {content[:500]}")
-    # Accept 'graph ' or 'flowchart '
-    if not (diagram_raw.lower().startswith("graph ") or diagram_raw.lower().startswith("flowchart ")):
-        raise HTTPException(status_code=502, detail=f"'diagram' must start with 'graph' or 'flowchart'. Got: {diagram_raw[:120]}")
+    # accept 'graph ' or 'flowchart '; if missing header, add default
+    header_l = diagram_raw.strip().lower()
+    if not (header_l.startswith("graph ") or header_l.startswith("flowchart ")):
+        diagram_raw = "flowchart TD\n" + diagram_raw
     if not tf_raw:
         raise HTTPException(status_code=502, detail=f"Model did not return 'terraform'. Content: {content[:500]}")
 
