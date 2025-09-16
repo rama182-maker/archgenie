@@ -7,32 +7,40 @@
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 </head>
 <body>
-  <div class="container">
-    <h1>ArchGenie - Azure Architecture Generator</h1>
+  <div class="main">
+    <h1>ArchGenie</h1>
+    <p>AI-powered Architecture Generator</p>
 
-    <textarea id="prompt" placeholder="Describe your Azure app..."></textarea>
-    <button id="generateBtn">Generate with Azure MCP</button>
-
-    <h2>Architecture Diagram</h2>
-    <div id="diagram" class="mermaid"></div>
-
-    <h2>Estimated Cost</h2>
-    <div id="cost"></div>
-
-    <div class="actions">
-      <button id="downloadDiagram">Download Diagram (PNG)</button>
-      <button id="downloadTF">Download Terraform (main.tf)</button>
-      <button id="copyTF">Copy Terraform to Clipboard</button>
-      <button id="downloadCSV">Download Cost Breakdown (CSV)</button>
+    <div class="form">
+      <input id="appName" placeholder="App Name" />
+      <textarea id="prompt" placeholder="Prompt"></textarea>
+      <input id="region" placeholder="Region (optional)" />
+      <input id="apiKey" placeholder="API Key (x-api-key)" />
+      <button id="generateBtn">Generate with Azure MCP</button>
+      <span id="status">ready</span>
     </div>
 
-    <h2>Terraform Code</h2>
-    <pre id="terraform"></pre>
+    <div class="output">
+      <div class="panel">
+        <h2>Architecture Diagram</h2>
+        <div id="diagram" class="mermaid"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Terraform</h2>
+        <button id="copyTF">Copy</button>
+        <button id="downloadTF">Download .tf</button>
+        <pre id="terraform"></pre>
+      </div>
+
+      <div class="panel">
+        <h2>Cost Estimate</h2>
+        <div id="cost"></div>
+        <button id="downloadCSV">Download CSV</button>
+      </div>
+    </div>
   </div>
 
-  <div id="toast"></div>
-
-  <!-- Load app.js -->
   <script src="app.js"></script>
 </body>
 </html>
