@@ -1,83 +1,34 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>ArchGenie</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link href="./styles.css" rel="stylesheet" />
-    <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
-  </head>
-  <body>
-    <main class="wrap">
-      <header class="hero">
-        <img src="logo.png" alt="ArchGenie Logo" class="logo" />
-        <h1>ArchGenie</h1>
-        <p>AI-powered Architecture Generator</p>
-        <p class="sub">Frontend served by Nginx, backend proxied at <code>/api</code></p>
-      </header>
+<head>
+  <meta charset="UTF-8">
+  <title>ArchGenie</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>ArchGenie - Azure Architecture Generator</h1>
+    <textarea id="prompt" placeholder="Describe your Azure app..."></textarea>
+    <button id="generateBtn">Generate Architecture</button>
 
-      <section class="panel">
-        <div class="row">
-          <label>App Name</label>
-          <input id="appName" type="text" value="secure Azure 3-tier web app" />
-        </div>
-        <div class="row">
-          <label>Prompt</label>
-          <textarea id="prompt" rows="3" placeholder="e.g. frontend & backend as App Service, use MSSQL database"></textarea>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label>Region (optional)</label>
-            <input id="region" type="text" placeholder="eastus (defaults in backend)" />
-          </div>
-          <div class="col">
-            <label>API Key (x-api-key)</label>
-            <input id="apiKey" type="password" placeholder="super-secret-key" />
-          </div>
-        </div>
-        <div class="row actions">
-          <button id="btnGenerate">Generate with Azure MCP</button>
-          <span id="status" class="status"></span>
-        </div>
-      </section>
+    <h2>Architecture Diagram</h2>
+    <div id="diagram" class="mermaid">graph TD;A-->B;</div>
 
-      <section class="grid">
-        <div class="card">
-          <div class="card-head">
-            <h3>Architecture Diagram</h3>
-            <div class="right">
-              <button id="btnSvg">Download SVG</button>
-              <button id="btnPng">Download PNG</button>
-            </div>
-          </div>
-          <div id="diagramHost" class="diagram-host"></div>
-        </div>
+    <h2>Estimated Cost</h2>
+    <div id="cost"></div>
 
-        <div class="card">
-          <div class="card-head">
-            <h3>Terraform</h3>
-            <div class="right">
-              <button id="btnCopyTf">Copy</button>
-              <button id="btnDlTf">Download .tf</button>
-            </div>
-          </div>
-          <textarea id="tfOut" class="code" rows="16" spellcheck="false"></textarea>
-        </div>
+    <div class="actions">
+      <button id="downloadDiagram">Download Diagram (PNG)</button>
+      <button id="downloadTF">Download Terraform (main.tf)</button>
+      <button id="copyTF">Copy Terraform to Clipboard</button>
+      <button id="downloadCSV">Download Cost Breakdown (CSV)</button>
+    </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h3>Estimated Monthly Cost</h3>
-            <div class="right"></div>
-          </div>
-          <div id="pricing"></div>
-        </div>
-      </section>
-
-      <footer class="foot">
-        <small>© ArchGenie</small>
-      </footer>
-    </main>
-
-    <script src="./app.js"></script>
-  </body>
+    <h2>Terraform Code</h2>
+    <pre id="terraform"></pre>
+  </div>
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
 </html>
