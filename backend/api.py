@@ -49,7 +49,6 @@ def sanitize_mermaid(src: str) -> str:
     lines = []
     for line in s.splitlines():
         just = line.strip()
-        # Drop trailing semicolons
         just = re.sub(r';\s*$', '', just)
         if just:
             lines.append(just)
@@ -62,12 +61,9 @@ def sanitize_mermaid(src: str) -> str:
     # Collapse multiple spaces
     s = re.sub(r'[ \t]+', ' ', s)
 
-    # Always end with a newline
     if not s.endswith("\n"):
         s += "\n"
-
     return s
-
 
 def strip_fences(text: str) -> str:
     if not text: return ""
@@ -102,7 +98,6 @@ def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
     if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
-# === Fallback deterministic diagram ===
 def build_mermaid_from_items() -> str:
     return """graph TD
 IN[Internet] --> FD[Azure Front Door]
@@ -112,6 +107,7 @@ WEB --> APP[Application Tier - Azure App Service]
 APP --> SQL[Azure SQL Database]
 """
 
+# === Simplified pricing ===
 def price_items(items: List[dict]) -> dict:
     total = 0.0
     out = []
@@ -127,6 +123,30 @@ def price_items(items: List[dict]) -> dict:
         total += monthly
         out.append({**it,"monthly":monthly})
     return {"currency":"USD","total_estimate": round(total,2), "items": out}
+
+# === Confluence doc builder ===
+def make_confluence_doc(app_name: str, diagram: str, terraform: str, cost: dict) -> str:
+    lines = []
+    lines.append(f"h1. {app_name} – Architecture Documentation\n")
+    lines.append("h2. Architecture Diagram")
+    lines.append("{code:mermaid}")
+    lines.append(diagram.strip())
+    lines.append("{code}\n")
+
+    lines.append("h2. Terraform Code")
+    lines.append("{code}")
+    lines.append(terraform.strip() or "# (no terraform)")
+    lines.append("{code}\n")
+
+    lines.append("h2. Estimated Monthly Cost")
+    if cost and cost.get("items"):
+        lines.append("|| Cloud || Service || SKU || Qty || Monthly ||")
+        for it in cost["items"]:
+            lines.append(f"| {it.get('cloud','')} | {it.get('service','')} | {it.get('sku','')} | {it.get('qty',1)} | ${it.get('monthly',0)} |")
+        lines.append(f"*Total ({cost.get('currency','USD')}):* ${cost.get('total_estimate',0)}")
+    else:
+        lines.append("No cost data available.")
+    return "\n".join(lines)
 
 # === Main endpoint ===
 @app.post("/mcp/azure/diagram-tf")
@@ -147,7 +167,6 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         content = result["choices"][0]["message"]["content"]
         parsed = extract_json_or_fences(content)
 
-        # Try AOAI diagram first
         diagram = sanitize_mermaid(parsed.get("diagram", ""))
         if not diagram.strip():
             diagram = build_mermaid_from_items()
@@ -162,13 +181,18 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         diagram = build_mermaid_from_items()
         tf = "# Terraform failed; check backend logs"
 
-    # Simplified cost
     items = []
     if "app service" in diagram.lower(): items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
     if "sql" in diagram.lower(): items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
     if "storage" in diagram.lower(): items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
 
-    cost = {"currency":"USD","total_estimate": sum([50 for _ in items]), "items": items}
-    print("=== DIAGRAM SENT TO FE ===")
-    print(repr(diagram))
-    return {"diagram": diagram, "terraform": tf, "cost": cost}
+    cost = price_items(items)
+
+    confluence_doc = make_confluence_doc(app_name, diagram, tf, cost)
+
+    return {
+        "diagram": diagram,
+        "terraform": tf,
+        "cost": cost,
+        "confluence_doc": confluence_doc
+    }
