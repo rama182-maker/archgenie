@@ -21,7 +21,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure Backend", version="cost-fixed")
+app = FastAPI(title="ArchGenie Azure Backend", version="dynamic-costs")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -88,7 +88,7 @@ def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
     if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
-# === Pricing from Azure Retail API ===
+# === Azure Pricing API ===
 def get_azure_price(service_name: str, sku: str, region: str="eastus") -> float:
     try:
         url = (
@@ -108,35 +108,76 @@ def get_azure_price(service_name: str, sku: str, region: str="eastus") -> float:
     except Exception:
         return 0.0
 
-def price_items(items: List[dict], region: str) -> dict:
+# === Parse Terraform for Resources ===
+def parse_resources_from_tf(tf: str) -> List[dict]:
+    resources = []
+    if not tf:
+        return resources
+
+    # Simple regex-based extraction for known services
+    if "azurerm_app_service" in tf:
+        resources.append({"cloud":"azure","service":"app_service","sku":"S1","qty":1})
+    if "azurerm_kubernetes_cluster" in tf:
+        resources.append({"cloud":"azure","service":"aks","sku":"Standard_D4s_v3","qty":3})
+    if "azurerm_sql_server" in tf or "azurerm_sql_database" in tf:
+        resources.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
+    if "azurerm_cosmosdb_account" in tf:
+        resources.append({"cloud":"azure","service":"cosmosdb","sku":"Standard","qty":1})
+    if "azurerm_storage_account" in tf:
+        resources.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
+    if "azurerm_key_vault" in tf:
+        resources.append({"cloud":"azure","service":"keyvault","sku":"Standard","qty":1})
+    if "azurerm_application_insights" in tf:
+        resources.append({"cloud":"azure","service":"app_insights","sku":"Standard","qty":1})
+
+    return resources
+
+# === Pricing Calculator ===
+def price_items(resources: List[dict], region: str) -> dict:
     total = 0.0
     out = []
-    for it in items:
-        service = it.get("service")
-        sku = it.get("sku")
+
+    for it in resources:
+        service = it["service"]
+        sku = it["sku"]
         qty = it.get("qty",1)
-        unit = 0.0
+
+        unit_price = 0.0
         monthly = 0.0
 
         if service == "app_service":
-            unit = get_azure_price("App Service", sku or "S1", region)
-            monthly = (unit * 730) * qty if unit else 50.0 * qty
+            unit_price = get_azure_price("App Service", sku, region)
+            monthly = (unit_price * 730) * qty if unit_price else 50.0 * qty
+
+        elif service == "aks":
+            unit_price = get_azure_price("Virtual Machines", sku, region)
+            monthly = (unit_price * 730) * qty if unit_price else 100.0 * qty
 
         elif service == "azure_sql":
-            unit = get_azure_price("SQL Database", sku or "S0", region)
-            monthly = (unit * 730) * qty if unit else 75.0 * qty
+            unit_price = get_azure_price("SQL Database", sku, region)
+            monthly = (unit_price * 730) * qty if unit_price else 75.0 * qty
+
+        elif service == "cosmosdb":
+            unit_price = get_azure_price("Azure Cosmos DB", sku, region)
+            monthly = unit_price * qty if unit_price else 25.0 * qty
 
         elif service == "storage":
-            unit = get_azure_price("Storage", sku or "LRS", region)
-            monthly = unit * qty if unit else 10.0 * qty
+            unit_price = get_azure_price("Storage", sku, region)
+            monthly = unit_price * qty if unit_price else 10.0 * qty
 
-        else:
-            monthly = 20.0 * qty
+        elif service == "keyvault":
+            unit_price = get_azure_price("Key Vault", sku, region)
+            monthly = unit_price * qty if unit_price else 5.0 * qty
+
+        elif service == "app_insights":
+            unit_price = get_azure_price("Application Insights", sku, region)
+            monthly = unit_price * qty if unit_price else 10.0 * qty
 
         total += monthly
         out.append({
             **it,
-            "unit_monthly": round(unit * 730,2) if unit else 0.0,
+            "region": region,
+            "unit_monthly": round(unit_price * 730,2) if unit_price else 0.0,
             "monthly": round(monthly,2)
         })
 
@@ -200,16 +241,9 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
         tf = "# Terraform failed; check backend logs"
 
-    # Resource inference for cost
-    items = []
-    if "app service" in diagram.lower():
-        items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
-    if "sql" in diagram.lower():
-        items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
-    if "storage" in diagram.lower():
-        items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
-
-    cost = price_items(items, region)
+    # Extract resources from Terraform
+    resources = parse_resources_from_tf(tf)
+    cost = price_items(resources, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost)
 
     return {
