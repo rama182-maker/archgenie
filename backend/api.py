@@ -35,21 +35,39 @@ def health():
 # === Helpers ===
 def sanitize_mermaid(src: str) -> str:
     if not src:
-        return ""
+        return "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
+
     s = src.strip()
+
+    # Force header
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
     else:
         s = "graph TD\n" + s
+
     lines = []
     for line in s.splitlines():
         just = line.strip()
-        if just.endswith(";"): just = just[:-1]
-        lines.append(just)
+        # Drop trailing semicolons
+        just = re.sub(r';\s*$', '', just)
+        if just:
+            lines.append(just)
+
     s = "\n".join(lines)
-    s = re.sub(r'\[([^\]]+)\]', lambda m: "["+m.group(1).replace("\n"," ").replace(",","")+"]", s)
-    return s + "\n"
+
+    # Remove commas & newlines inside labels
+    s = re.sub(r'\[([^\]]+)\]', lambda m: "[" + m.group(1).replace("\n"," ").replace(",","") + "]", s)
+
+    # Collapse multiple spaces
+    s = re.sub(r'[ \t]+', ' ', s)
+
+    # Always end with a newline
+    if not s.endswith("\n"):
+        s += "\n"
+
+    return s
+
 
 def strip_fences(text: str) -> str:
     if not text: return ""
