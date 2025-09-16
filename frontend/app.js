@@ -1,12 +1,13 @@
 mermaid.initialize({ startOnLoad: false });
 
 async function generate() {
-  const appName = document.getElementById('appName').value || "Azure app";
-  const prompt = document.getElementById('prompt').value || "";
-  const region = document.getElementById('region').value || "eastus";
-  const apiKey = document.getElementById('apiKey').value || "super-secret-key";
+  const appName = document.getElementById('appName')?.value || "Azure app";
+  const prompt = document.getElementById('prompt')?.value || "";
+  const region = document.getElementById('region')?.value || "eastus";
+  const apiKey = document.getElementById('apiKey')?.value || "super-secret-key";
 
-  document.getElementById('status').textContent = "loading...";
+  const statusEl = document.getElementById('status');
+  if (statusEl) statusEl.textContent = "loading...";
 
   try {
     const res = await fetch('/mcp/azure/diagram-tf', {
@@ -24,14 +25,21 @@ async function generate() {
     // === Terraform ===
     document.getElementById('terraform').textContent = data.terraform || "";
 
-    // === Diagram (newline fix) ===
+    // === Diagram (newline decode for Mermaid) ===
     if (data.diagram) {
-      const diagramText = data.diagram.replace(/\\n/g, "\n");
-      mermaid.render('theGraph', diagramText, (svgCode) => {
-        document.getElementById('diagram').innerHTML = svgCode;
-      });
+      const diagramText = (data.diagram || "").replace(/\\n/g, "\n");
+      try {
+        mermaid.render('theGraph', diagramText, (svgCode) => {
+          document.getElementById('diagram').innerHTML = svgCode;
+        });
+      } catch (err) {
+        console.error("Mermaid parse error:", err);
+        document.getElementById('diagram').innerHTML =
+          `<pre>${diagramText}</pre>`;
+      }
     } else {
-      document.getElementById('diagram').innerHTML = "<em>No diagram received</em>";
+      document.getElementById('diagram').innerHTML =
+        "<em>No diagram received</em>";
     }
 
     // === Cost ===
@@ -54,17 +62,17 @@ async function generate() {
     window._lastTF = data.terraform || "";
     window._lastCost = data.cost || {};
 
-    document.getElementById('status').textContent = "ready";
+    if (statusEl) statusEl.textContent = "ready";
 
   } catch (err) {
     console.error(err);
-    document.getElementById('status').textContent = "error";
+    if (statusEl) statusEl.textContent = "error";
   }
 }
 
+// === Button bindings ===
 document.getElementById('generateBtn').onclick = generate;
 
-// === Download / Copy helpers ===
 document.getElementById('downloadTF').onclick = () => {
   const blob = new Blob([window._lastTF || ""], { type: 'text/plain' });
   const a = document.createElement('a');
