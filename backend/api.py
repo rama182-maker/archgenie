@@ -37,7 +37,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure-Only Backend", version="8.0.0")
+app = FastAPI(title="ArchGenie Azure-Only Backend (graph TD forced)", version="8.0.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -147,24 +147,28 @@ def extract_json_or_fences(content: str) -> Dict[str, Any]:
     if m: out["terraform"] = m.group(2).strip()
     return out
 
-# ============== Mermaid sanitize ==============
+# ============== Mermaid sanitize (force graph TD) ==============
 def sanitize_mermaid(src: str) -> str:
     if not src:
         return src
     s = src.strip()
-    # Ensure header exists; normalize to 'flowchart TD'
+
+    # Ensure header exists; normalize to 'graph TD' (FE-compatible)
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.IGNORECASE | re.MULTILINE)
     if header_re.search(s):
-        s = header_re.sub("flowchart TD", s, count=1)
+        s = header_re.sub("graph TD", s, count=1)
     else:
-        s = "flowchart TD\n" + s
-    # Fix subgraph titles like: subgraph "Title (region)"
+        s = "graph TD\n" + s
+
+    # subgraph "Title (region)"
     s = re.sub(r'^\s*subgraph\s+([^\[\n"]+)\s*\(([^)]+)\)\s*;?\s*$',
                r'subgraph "\1 (\2)"', s, flags=re.MULTILINE)
     s = re.sub(r'^(?P<hdr>\s*subgraph\b[^\n;]*?);+\s*$', r'\g<hdr>', s, flags=re.MULTILINE)
+
     # '-. label .->' -> '-. |label| .->'
     s = re.sub(r'-\.\s+([^.|><\-\n][^.|><\-\n]*?)\s+\.\->', r'-. |\1| .->', s)
-    # Ensure edge lines end with ';', node lines do not
+
+    # Edge vs node line endings
     out_lines: List[str] = []
     for line in s.splitlines():
         just = line.rstrip().strip()
@@ -182,10 +186,18 @@ def sanitize_mermaid(src: str) -> str:
         else:
             out_lines.append(just.rstrip(";"))
     s = "\n".join(out_lines)
+
     # Insert newline after ']' or ')' if followed by token (fixes ']SP')
     s = re.sub(r'(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))', r'\1\n', s)
+
     # Remove commas from labels
     s = re.sub(r'\[(.*?)\]', lambda m: f"[{m.group(1).replace(',', '')}]", s)
+
+    # Flatten accidental mid-word newlines inside labels (e.g., 'Firew\nall')
+    def _flatten_lbl(m):
+        return "[" + m.group(1).replace("\n", " ") + "]"
+    s = re.sub(r'\[([^\]]+)\]', _flatten_lbl, s)
+
     if not s.endswith("\n"):
         s += "\n"
     return s
@@ -496,11 +508,9 @@ def price_items(items: List[dict]) -> dict:
                     else:
                         unit_monthly = None
                 elif service == "redis":
-                    # Optional: add azure_price_for_redis if you want Redis priced
-                    unit_monthly = 0.0
+                    unit_monthly = 0.0  # extend with redis pricing if needed
                 elif service == "monitor":
-                    # Optional: add azure_price_for_log_analytics
-                    unit_monthly = 0.0
+                    unit_monthly = 0.0  # extend with log analytics pricing if needed
                 elif service == "aks":
                     notes.append("AKS control plane free; worker node VM costs not included.")
                     unit_monthly = 0.0
@@ -529,7 +539,7 @@ def price_items(items: List[dict]) -> dict:
             out_line["rules"] = int(it.get("rules") or DEFAULT_LB_RULES)
             out_line["data_gb"] = float(it.get("data_gb") or DEFAULT_LB_DATA_GB)
         out_items.append(out_line)
-    return {"currency": currency, "total_estimate": round(total, 2), "items": out_items}
+    return {"currency": currency, "total_estimate": round(total, 2), "items": out_items, "notes": notes}
 
 # ============== Normalization from text/diagram/tf ==============
 def normalize_to_items(ask: str = "", diagram: str = "", tf: str = "", region: Optional[str] = None) -> List[dict]:
@@ -594,13 +604,13 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         tf_raw      = (parsed.get("terraform") or "").strip()
         if not diagram_raw or not tf_raw:
             raise ValueError("Model missing diagram/terraform")
-        diagram = sanitize_mermaid(diagram_raw)
+        diagram = sanitize_mermaid(diagram_raw)  # will force "graph TD"
         tf      = strip_fences(tf_raw)
     except Exception as e:
         if not FAIL_OPEN:
             raise
         # Safe fallback so FE always renders
-        diagram = sanitize_mermaid("""flowchart TD
+        diagram = sanitize_mermaid("""graph TD
   A[Internet] -->|HTTPS| B[Azure Front Door];
   B -->|HTTPS| C[Azure Application Gateway];
   C -->|WAF| H[Web Application Firewall];
