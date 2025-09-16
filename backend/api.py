@@ -1,23 +1,27 @@
-import os, re, json, requests
-from typing import List, Dict, Any
+import os, re, json, time, random, requests
+from typing import List, Dict, Any, Tuple, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
-# === Config ===
+load_dotenv()
+
 CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
+
 AZURE_OPENAI_ENDPOINT    = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
 AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
 
 DEFAULT_REGION = "eastus"
-FAIL_OPEN = True
+FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
 
 def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure Backend", version="1.0")
+app = FastAPI(title="ArchGenie Azure Backend", version="patched")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -32,20 +36,38 @@ def health():
 def sanitize_mermaid(src: str) -> str:
     if not src:
         return "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
+
     s = src.strip()
+
+    # Force header
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
     else:
         s = "graph TD\n" + s
+
     lines = []
     for line in s.splitlines():
         just = line.strip()
-        if just.endswith(";"): just = just[:-1]
-        if just: lines.append(just)
+        # Drop trailing semicolons
+        just = re.sub(r';\s*$', '', just)
+        if just:
+            lines.append(just)
+
     s = "\n".join(lines)
-    s = re.sub(r'\[([^\]]+)\]', lambda m: "["+m.group(1).replace("\n"," ").replace(",","")+"]", s)
-    return s + "\n"
+
+    # Remove commas & newlines inside labels
+    s = re.sub(r'\[([^\]]+)\]', lambda m: "[" + m.group(1).replace("\n"," ").replace(",","") + "]", s)
+
+    # Collapse multiple spaces
+    s = re.sub(r'[ \t]+', ' ', s)
+
+    # Always end with a newline
+    if not s.endswith("\n"):
+        s += "\n"
+
+    return s
+
 
 def strip_fences(text: str) -> str:
     if not text: return ""
@@ -73,19 +95,22 @@ def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
         raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
     url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
     headers = {"Content-Type":"application/json","api-key":AZURE_OPENAI_API_KEY}
-    body = {"messages": messages, "temperature":0.2, "response_format":{"type":"json_object"}}
+    body = {"messages": messages, "temperature":0.2}
+    if AZURE_OPENAI_FORCE_JSON:
+        body["response_format"] = {"type":"json_object"}
     r = requests.post(url, headers=headers, data=json.dumps(body), timeout=60)
     if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
-# === Costing ===
-def normalize_to_items(diagram:str,tf:str)->List[dict]:
-    blob = f"{diagram}\n{tf}".lower()
-    items=[]
-    if "app service" in blob: items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
-    if "sql" in blob: items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
-    if "storage" in blob: items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
-    return items
+# === Fallback deterministic diagram ===
+def build_mermaid_from_items() -> str:
+    return """graph TD
+IN[Internet] --> FD[Azure Front Door]
+FD --> AGW[Azure Application Gateway (WAF v2)]
+AGW --> WEB[Web Tier - Azure App Service]
+WEB --> APP[Application Tier - Azure App Service]
+APP --> SQL[Azure SQL Database]
+"""
 
 def price_items(items: List[dict]) -> dict:
     total = 0.0
@@ -103,7 +128,7 @@ def price_items(items: List[dict]) -> dict:
         out.append({**it,"monthly":monthly})
     return {"currency":"USD","total_estimate": round(total,2), "items": out}
 
-# === Endpoint ===
+# === Main endpoint ===
 @app.post("/mcp/azure/diagram-tf")
 def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
     app_name = payload.get("app_name", "3-tier web app")
@@ -122,23 +147,28 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         content = result["choices"][0]["message"]["content"]
         parsed = extract_json_or_fences(content)
 
-        # Use AOAI diagram if valid, else fallback
+        # Try AOAI diagram first
         diagram = sanitize_mermaid(parsed.get("diagram", ""))
         if not diagram.strip():
-            diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
+            diagram = build_mermaid_from_items()
 
-        # Use AOAI terraform if valid, else fallback
-        tf = strip_fences(parsed.get("terraform", ""))
+        tf = strip_fences(parsed.get("terraform",""))
         if not tf.strip():
-            tf = "resource \"azurerm_resource_group\" \"example\" {\n  name     = \"example-rg\"\n  location = \"eastus\"\n}\n"
+            tf = "# Terraform failed; check backend logs"
 
     except Exception:
         if not FAIL_OPEN:
             raise
-        diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
-        tf = "resource \"azurerm_resource_group\" \"example\" {\n  name     = \"example-rg\"\n  location = \"eastus\"\n}\n"
+        diagram = build_mermaid_from_items()
+        tf = "# Terraform failed; check backend logs"
 
-    items = normalize_to_items(diagram, tf)
-    cost = price_items(items)
+    # Simplified cost
+    items = []
+    if "app service" in diagram.lower(): items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
+    if "sql" in diagram.lower(): items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
+    if "storage" in diagram.lower(): items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
 
+    cost = {"currency":"USD","total_estimate": sum([50 for _ in items]), "items": items}
+    print("=== DIAGRAM SENT TO FE ===")
+    print(repr(diagram))
     return {"diagram": diagram, "terraform": tf, "cost": cost}
