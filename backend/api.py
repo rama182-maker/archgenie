@@ -153,5 +153,6 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
     if "storage" in diagram.lower(): items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
 
     cost = {"currency":"USD","total_estimate": sum([50 for _ in items]), "items": items}
-
+    print("=== DIAGRAM SENT TO FE ===")
+    print(repr(diagram))
     return {"diagram": diagram, "terraform": tf, "cost": cost}
