@@ -1,5 +1,5 @@
-import os, re, json, time, random, requests
-from typing import List, Dict, Any, Tuple, Optional
+import os, re, json, requests
+from typing import List, Dict, Any
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -21,7 +21,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure Backend", version="patched")
+app = FastAPI(title="ArchGenie Azure Backend", version="enhanced")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -36,31 +36,21 @@ def health():
 def sanitize_mermaid(src: str) -> str:
     if not src:
         return "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
-
     s = src.strip()
-
-    # Force header
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
     else:
         s = "graph TD\n" + s
-
     lines = []
     for line in s.splitlines():
         just = line.strip()
         just = re.sub(r';\s*$', '', just)
         if just:
             lines.append(just)
-
     s = "\n".join(lines)
-
-    # Remove commas & newlines inside labels
     s = re.sub(r'\[([^\]]+)\]', lambda m: "[" + m.group(1).replace("\n"," ").replace(",","") + "]", s)
-
-    # Collapse multiple spaces
     s = re.sub(r'[ \t]+', ' ', s)
-
     if not s.endswith("\n"):
         s += "\n"
     return s
@@ -98,30 +88,47 @@ def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
     if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
-def build_mermaid_from_items() -> str:
-    return """graph TD
-IN[Internet] --> FD[Azure Front Door]
-FD --> AGW[Azure Application Gateway (WAF v2)]
-AGW --> WEB[Web Tier - Azure App Service]
-WEB --> APP[Application Tier - Azure App Service]
-APP --> SQL[Azure SQL Database]
-"""
+# === Pricing from Azure Retail API ===
+def get_azure_price(service_name: str, sku: str, region: str="eastus") -> float:
+    try:
+        url = (
+            f"https://prices.azure.com/api/retail/prices?"
+            f"$filter=serviceName eq '{service_name}' "
+            f"and armSkuName eq '{sku}' "
+            f"and armRegionName eq '{region}'"
+        )
+        r = requests.get(url, timeout=20)
+        if r.status_code != 200:
+            return 0.0
+        data = r.json()
+        items = data.get("Items", [])
+        if not items:
+            return 0.0
+        return items[0].get("retailPrice", 0.0)
+    except Exception:
+        return 0.0
 
-# === Simplified pricing ===
-def price_items(items: List[dict]) -> dict:
+def price_items(items: List[dict], region: str) -> dict:
     total = 0.0
     out = []
     for it in items:
-        if it["service"]=="app_service":
-            monthly = 50.0 * it.get("qty",1)
-        elif it["service"]=="azure_sql":
-            monthly = 75.0 * it.get("qty",1)
-        elif it["service"]=="storage":
-            monthly = 10.0 * it.get("qty",1)
+        service = it.get("service")
+        sku = it.get("sku")
+        qty = it.get("qty",1)
+        if service == "app_service":
+            unit = get_azure_price("App Service", sku or "S1", region)
+            monthly = unit * 730 * qty if unit else 50.0*qty
+        elif service == "azure_sql":
+            unit = get_azure_price("SQL Database", sku or "S0", region)
+            monthly = unit * 730 * qty if unit else 75.0*qty
+        elif service == "storage":
+            unit = get_azure_price("Storage", sku or "LRS", region)
+            monthly = unit * qty if unit else 10.0*qty
         else:
-            monthly = 20.0 * it.get("qty",1)
+            unit = 0.0
+            monthly = 20.0*qty
         total += monthly
-        out.append({**it,"monthly":monthly})
+        out.append({**it,"monthly": round(monthly,2),"unit_monthly": round(unit*730,2) if unit else 0.0})
     return {"currency":"USD","total_estimate": round(total,2), "items": out}
 
 # === Confluence doc builder ===
@@ -132,17 +139,15 @@ def make_confluence_doc(app_name: str, diagram: str, terraform: str, cost: dict)
     lines.append("{code:mermaid}")
     lines.append(diagram.strip())
     lines.append("{code}\n")
-
     lines.append("h2. Terraform Code")
     lines.append("{code}")
     lines.append(terraform.strip() or "# (no terraform)")
     lines.append("{code}\n")
-
     lines.append("h2. Estimated Monthly Cost")
     if cost and cost.get("items"):
-        lines.append("|| Cloud || Service || SKU || Qty || Monthly ||")
+        lines.append("|| Cloud || Service || SKU || Qty || Unit/Month || Monthly ||")
         for it in cost["items"]:
-            lines.append(f"| {it.get('cloud','')} | {it.get('service','')} | {it.get('sku','')} | {it.get('qty',1)} | ${it.get('monthly',0)} |")
+            lines.append(f"| {it.get('cloud','')} | {it.get('service','')} | {it.get('sku','')} | {it.get('qty',1)} | ${it.get('unit_monthly',0)} | ${it.get('monthly',0)} |")
         lines.append(f"*Total ({cost.get('currency','USD')}):* ${cost.get('total_estimate',0)}")
     else:
         lines.append("No cost data available.")
@@ -157,6 +162,9 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
 
     system = (
         "You are ArchGenie's Azure MCP. "
+        "Generate a detailed Azure reference architecture diagram in Mermaid. "
+        "Use subgraphs for tiers (Networking, Web, App, Data, Monitoring). "
+        "Use proper Azure resource names (e.g., 'Azure Application Gateway', 'Azure App Service', 'Azure SQL Database'). "
         "Return JSON ONLY with keys: "
         '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
     )
@@ -169,7 +177,7 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
 
         diagram = sanitize_mermaid(parsed.get("diagram", ""))
         if not diagram.strip():
-            diagram = build_mermaid_from_items()
+            diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
 
         tf = strip_fences(parsed.get("terraform",""))
         if not tf.strip():
@@ -178,16 +186,19 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
     except Exception:
         if not FAIL_OPEN:
             raise
-        diagram = build_mermaid_from_items()
+        diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
         tf = "# Terraform failed; check backend logs"
 
+    # Resource inference for cost
     items = []
-    if "app service" in diagram.lower(): items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
-    if "sql" in diagram.lower(): items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
-    if "storage" in diagram.lower(): items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
+    if "app service" in diagram.lower():
+        items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
+    if "sql" in diagram.lower():
+        items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
+    if "storage" in diagram.lower():
+        items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
 
-    cost = price_items(items)
-
+    cost = price_items(items, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost)
 
     return {
