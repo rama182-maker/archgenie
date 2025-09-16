@@ -77,7 +77,7 @@ async function generate() {
   }
 }
 
-// === Button handlers ===
+// === Button bindings ===
 document.getElementById('generateBtn').onclick = generate;
 
 document.getElementById('downloadTF').onclick = () => {
@@ -98,9 +98,9 @@ document.getElementById('copyTF').onclick = () => {
 
 document.getElementById('downloadCSV').onclick = () => {
   const cost = window._lastCost || {};
-  let csv = "service,sku,qty,monthly\n";
+  let csv = "service,sku,qty,monthly\\n";
   (cost.items || []).forEach(i => {
-    csv += `${i.service},${i.sku},${i.qty},${i.monthly}\n`;
+    csv += `${i.service},${i.sku},${i.qty},${i.monthly}\\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a');
