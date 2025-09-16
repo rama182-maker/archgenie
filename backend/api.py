@@ -142,6 +142,51 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
     )
     user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
 
+    diagram, tf = "", ""
+    try:
+        result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
+        content = result["choices"][0]["message"]["content"]
+        parsed = extract_json_or_fences(content)
+
+        diagram = sanitize_mermaid(parsed.get("diagram", ""))
+        if not diagram.strip():
+            diagram = build_mermaid_from_items()
+
+        tf = strip_fences(parsed.get("terraform", ""))
+        if not tf.strip():
+            tf = "# Terraform failed; check backend logs"
+
+    except Exception:
+        if not FAIL_OPEN:
+            raise
+        diagram = build_mermaid_from_items()
+        tf = "# Terraform failed; check backend logs"
+
+    # Detect resources from diagram text
+    items = []
+    if "app service" in diagram.lower():
+        items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
+    if "sql" in diagram.lower():
+        items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
+    if "storage" in diagram.lower():
+        items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
+
+    # Use proper pricing
+    cost = price_items(items)
+
+    return {"diagram": diagram, "terraform": tf, "cost": cost}
+
+    app_name = payload.get("app_name", "3-tier web app")
+    extra = payload.get("prompt", "")
+    region = payload.get("region", DEFAULT_REGION)
+
+    system = (
+        "You are ArchGenie's Azure MCP. "
+        "Return JSON ONLY with keys: "
+        '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
+    )
+    user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
+
     try:
         result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
         content = result["choices"][0]["message"]["content"]
