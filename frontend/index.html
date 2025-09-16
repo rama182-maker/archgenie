@@ -12,38 +12,83 @@
       <header class="hero">
         <img src="logo.png" alt="ArchGenie Logo" class="logo" />
         <h1>ArchGenie</h1>
+        <p>AI-powered Architecture Generator</p>
       </header>
 
-      <!-- existing input controls (unchanged) -->
-      <section class="controls">
-        <label for="appName">App Name:</label>
-        <input id="appName" type="text" />
-
-        <label for="region">Region:</label>
-        <input id="region" type="text" value="eastus" />
-
-        <label for="prompt">Resources (JSON):</label>
-        <textarea id="prompt" rows="6" cols="80">[{"serviceName":"Virtual Machines","sku":"Standard_D2s_v3"}]</textarea>
-
-        <label for="apiKey">API Key:</label>
-        <input id="apiKey" type="password" />
-
-        <button id="btnGenerate">Generate</button>
+      <section class="panel">
+        <div class="row">
+          <label>App Name</label>
+          <input id="appName" type="text" value="secure Azure 3-tier web app" />
+        </div>
+        <div class="row">
+          <label>Prompt</label>
+          <textarea id="prompt" rows="3" placeholder="e.g. frontend & backend as App Service, use MSSQL database"></textarea>
+        </div>
+        <div class="row">
+          <div class="col">
+            <label>Region (optional)</label>
+            <input id="region" type="text" placeholder="eastus (defaults in backend)" />
+          </div>
+          <div class="col">
+            <label>API Key (x-api-key)</label>
+            <input id="apiKey" type="password" placeholder="super-secret-key" />
+          </div>
+        </div>
+        <div class="row actions">
+          <button id="btnGenerate">Generate with Azure MCP</button>
+          <span id="status" class="status"></span>
+        </div>
       </section>
 
-      <p id="status"></p>
+      <section class="grid">
+        <div class="card">
+          <div class="card-head">
+            <h3>Architecture Diagram</h3>
+            <div class="right">
+              <button id="btnSvg">Download SVG</button>
+              <button id="btnPng">Download PNG</button>
+            </div>
+          </div>
+          <div id="diagramHost" class="diagram-host"></div>
+        </div>
 
-      <!-- outputs -->
-      <section id="diagramHost"></section>
-      <section id="terraformHost"></section>
-      <section id="costHost"></section>
+        <div class="card">
+          <div class="card-head">
+            <h3>Terraform</h3>
+            <div class="right">
+              <button id="btnCopyTf">Copy</button>
+              <button id="btnDlTf">Download .tf</button>
+            </div>
+          </div>
+          <textarea id="tfOut" class="code" rows="16" spellcheck="false"></textarea>
+        </div>
 
-      <section>
-        <h2>Confluence Documentation</h2>
-        <textarea id="confluenceDoc" rows="15" cols="100" readonly></textarea><br />
-        <button id="btnCopyConfluence" style="display:none;" onclick="copyConfluence()">📋 Copy to Confluence</button>
+        <div class="card">
+          <div class="card-head">
+            <h3>Estimated Monthly Cost</h3>
+            <div class="right"></div>
+          </div>
+          <div id="pricing"></div>
+        </div>
+
+        <!-- 🔹 New Confluence Documentation Card -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Confluence Documentation</h3>
+            <div class="right">
+              <button id="btnCopyConfluence">Copy</button>
+              <button id="btnDlConfluence">Download .txt</button>
+            </div>
+          </div>
+          <textarea id="confluenceDoc" class="code" rows="16" spellcheck="false"></textarea>
+        </div>
       </section>
+
+      <footer class="foot">
+        <small>© ArchGenie</small>
+      </footer>
     </main>
+
     <script src="./app.js"></script>
   </body>
 </html>

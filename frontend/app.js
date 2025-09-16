@@ -13,6 +13,7 @@ const tfHost       = el('terraformHost');
 const costHost     = el('costHost');
 const confluenceBox= el('confluenceDoc');
 const copyBtn      = el('btnCopyConfluence');
+const dlBtn        = el('btnDlConfluence');   // 🔹 added
 
 btnGenerate.addEventListener('click', async () => {
   statusEl.textContent = "Generating...";
@@ -21,6 +22,7 @@ btnGenerate.addEventListener('click', async () => {
   costHost.innerHTML = "";
   confluenceBox.value = "";
   copyBtn.style.display = "none";
+  if (dlBtn) dlBtn.style.display = "none";   // 🔹 reset
 
   try {
     const payload = {
@@ -64,8 +66,11 @@ btnGenerate.addEventListener('click', async () => {
     if (data.confluence_doc) {
       confluenceBox.value = data.confluence_doc;
       copyBtn.style.display = "inline-block";
+      if (dlBtn) dlBtn.style.display = "inline-block";  // 🔹 show download
     } else {
       confluenceBox.value = "No Confluence documentation available.";
+      copyBtn.style.display = "none";
+      if (dlBtn) dlBtn.style.display = "none";
     }
 
   } catch (err) {
@@ -77,6 +82,17 @@ function copyConfluence() {
   confluenceBox.select();
   document.execCommand("copy");
   alert("Confluence documentation copied!");
+}
+
+// 🔹 new function for download
+function downloadConfluence() {
+  const blob = new Blob([confluenceBox.value], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "archgenie_confluence.txt";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function escapeHtml(text) {
