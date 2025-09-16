@@ -21,6 +21,9 @@ const confluenceBox   = el('confluenceDoc');
 const btnCopyConf     = el('btnCopyConfluence');
 const btnDlConf       = el('btnDlConfluence');
 
+// 🔹 CSV button
+const btnCsv = el('btnCsv');
+
 let lastSvg = '';
 let lastDiagram = '';
 let lastTf = '';
@@ -227,6 +230,38 @@ btnDlConf.addEventListener('click', () => {
   a.href = URL.createObjectURL(blob);
   a.download = 'archgenie_confluence.txt';
   a.click(); URL.revokeObjectURL(a.href);
+});
+
+// 🔹 CSV button handler
+btnCsv?.addEventListener('click', async () => {
+  const appName = appNameInput.value.trim() || 'archgenie-app';
+  const region  = regionInput.value.trim() || 'eastus';
+
+  const payload = {
+    app_name: appName,
+    region: region,
+    terraform: tfOut.value || ""
+  };
+
+  try {
+    const resp = await fetch('/api/mcp/azure/cost-csv', {
+      method: 'POST',
+      headers: { "Content-Type": "application/json", "x-api-key": apiKeyInput.value.trim() },
+      body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) throw new Error("Failed to download CSV");
+
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${appName.replace(/\s+/g,'_')}_costs.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+
+  } catch (err) {
+    alert("Error downloading CSV: " + err.message);
+  }
 });
 
 el('btnGenerate').addEventListener('click', callAzureMcp);

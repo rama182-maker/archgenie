@@ -1,8 +1,10 @@
-import os, re, json, requests
+import os, re, json, requests, csv
 from typing import List, Dict, Any
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
+from io import StringIO
 
 load_dotenv()
 
@@ -114,7 +116,6 @@ def parse_resources_from_tf(tf: str) -> List[dict]:
     if not tf:
         return resources
 
-    # Simple regex-based extraction for known services
     if "azurerm_app_service" in tf:
         resources.append({"cloud":"azure","service":"app_service","sku":"S1","qty":1})
     if "azurerm_kubernetes_cluster" in tf:
@@ -241,7 +242,6 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
         tf = "# Terraform failed; check backend logs"
 
-    # Extract resources from Terraform
     resources = parse_resources_from_tf(tf)
     cost = price_items(resources, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost)
@@ -252,3 +252,36 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         "cost": cost,
         "confluence_doc": confluence_doc
     }
+
+# === CSV Export Endpoint ===
+@app.post("/mcp/azure/cost-csv")
+def azure_cost_csv(payload: dict = Body(...), _=Depends(require_api_key)):
+    app_name = payload.get("app_name", "3-tier web app")
+    region = payload.get("region", DEFAULT_REGION)
+
+    tf = payload.get("terraform","")
+    resources = parse_resources_from_tf(tf)
+    cost = price_items(resources, region)
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Cloud", "Service", "SKU", "Region", "Qty", "Unit/Month (USD)", "Monthly (USD)"])
+    for it in cost["items"]:
+        writer.writerow([
+            it.get("cloud",""),
+            it.get("service",""),
+            it.get("sku",""),
+            it.get("region",""),
+            it.get("qty",1),
+            it.get("unit_monthly",0),
+            it.get("monthly",0),
+        ])
+    writer.writerow([])
+    writer.writerow(["Total", "", "", "", "", "", cost.get("total_estimate",0)])
+
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={app_name.replace(' ','_')}_costs.csv"}
+    )
