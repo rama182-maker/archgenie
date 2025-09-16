@@ -20,7 +20,6 @@ AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
 
-# Pricing knobs
 USE_LIVE_AZURE_PRICES = os.getenv("USE_LIVE_AZURE_PRICES", "true").lower() == "true"
 HOURS_PER_MONTH = float(os.getenv("HOURS_PER_MONTH", "730"))
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "eastus")
@@ -29,7 +28,6 @@ DEFAULT_SQL_COMPUTE_ONLY     = os.getenv("DEFAULT_SQL_COMPUTE_ONLY", "true").low
 DEFAULT_LB_RULES             = int(os.getenv("DEFAULT_LB_RULES", "2"))
 DEFAULT_LB_DATA_GB           = float(os.getenv("DEFAULT_LB_DATA_GB", "100"))
 
-# "Never 502" mode: if AOAI or parsing fails, return a safe fallback
 FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
 
 # ============== FastAPI ==============
@@ -37,7 +35,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure-Only Backend (graph TD forced)", version="8.0.1")
+app = FastAPI(title="ArchGenie Azure-Only Backend (Mermaid v10 safe)", version="8.0.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -147,13 +145,13 @@ def extract_json_or_fences(content: str) -> Dict[str, Any]:
     if m: out["terraform"] = m.group(2).strip()
     return out
 
-# ============== Mermaid sanitize (force graph TD) ==============
+# ============== Mermaid sanitize (Mermaid v10 safe) ==============
 def sanitize_mermaid(src: str) -> str:
     if not src:
         return src
     s = src.strip()
 
-    # Ensure header exists; normalize to 'graph TD' (FE-compatible)
+    # Ensure header exists; normalize to 'graph TD' (strict for some FEs)
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.IGNORECASE | re.MULTILINE)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
@@ -165,38 +163,31 @@ def sanitize_mermaid(src: str) -> str:
                r'subgraph "\1 (\2)"', s, flags=re.MULTILINE)
     s = re.sub(r'^(?P<hdr>\s*subgraph\b[^\n;]*?);+\s*$', r'\g<hdr>', s, flags=re.MULTILINE)
 
-    # '-. label .->' -> '-. |label| .->'
+    # Convert '-. label .->' -> '-. |label| .->'
     s = re.sub(r'-\.\s+([^.|><\-\n][^.|><\-\n]*?)\s+\.\->', r'-. |\1| .->', s)
 
-    # Edge vs node line endings
-    out_lines: List[str] = []
+    lines = []
     for line in s.splitlines():
-        just = line.rstrip().strip()
+        just = line.strip()
         if not just:
-            out_lines.append("")
+            lines.append("")
             continue
-        if just.startswith("subgraph") or just == "end":
-            out_lines.append(just)
-            continue
-        is_edge = ("--" in just) or (".->" in just) or ("---" in just) or ("<->" in just)
-        if is_edge:
-            if not just.endswith(";"):
-                just += ";"
-            out_lines.append(just)
-        else:
-            out_lines.append(just.rstrip(";"))
-    s = "\n".join(out_lines)
+        # Drop trailing semicolons entirely (Mermaid v10 can complain)
+        just = re.sub(r';\s*$', '', just)
+        lines.append(just)
+    s = "\n".join(lines)
 
-    # Insert newline after ']' or ')' if followed by token (fixes ']SP')
+    # Insert newline after ']' or ')' if immediately followed by token (fixes `]SP` sticking)
     s = re.sub(r'(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))', r'\1\n', s)
 
-    # Remove commas from labels
-    s = re.sub(r'\[(.*?)\]', lambda m: f"[{m.group(1).replace(',', '')}]", s)
+    # Remove commas from labels and flatten accidental newlines inside labels (e.g., 'Firew\nall')
+    def _clean_label(m):
+        inner = m.group(1).replace(",", "").replace("\n", " ")
+        return f"[{inner}]"
+    s = re.sub(r'\[([^\]]+)\]', _clean_label, s)
 
-    # Flatten accidental mid-word newlines inside labels (e.g., 'Firew\nall')
-    def _flatten_lbl(m):
-        return "[" + m.group(1).replace("\n", " ") + "]"
-    s = re.sub(r'\[([^\]]+)\]', _flatten_lbl, s)
+    # Collapse excess spaces
+    s = re.sub(r'[ \t]+', ' ', s).strip()
 
     if not s.endswith("\n"):
         s += "\n"
@@ -604,22 +595,20 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         tf_raw      = (parsed.get("terraform") or "").strip()
         if not diagram_raw or not tf_raw:
             raise ValueError("Model missing diagram/terraform")
-        diagram = sanitize_mermaid(diagram_raw)  # will force "graph TD"
+        diagram = sanitize_mermaid(diagram_raw)  # v10-safe (no semicolons, forced 'graph TD')
         tf      = strip_fences(tf_raw)
     except Exception as e:
         if not FAIL_OPEN:
             raise
-        # Safe fallback so FE always renders
         diagram = sanitize_mermaid("""graph TD
-  A[Internet] -->|HTTPS| B[Azure Front Door];
-  B -->|HTTPS| C[Azure Application Gateway];
-  C -->|WAF| H[Web Application Firewall];
-  C -->|HTTPS| D[Web Tier - Azure App Service];
-  D -->|HTTPS| E[Application Tier - Azure App Service];
-  E -->|TCP 1433| F[Azure SQL Database];
+  A[Internet] -->|HTTPS| B[Azure Front Door]
+  B -->|HTTPS| C[Azure Application Gateway]
+  C -->|WAF| H[Web Application Firewall]
+  C -->|HTTPS| D[Web Tier - Azure App Service]
+  D -->|HTTPS| E[Application Tier - Azure App Service]
+  E -->|TCP 1433| F[Azure SQL Database]
 """)
         tf = "# Terraform generation failed-open; check backend logs"
-    # Best-effort Azure cost
     items = normalize_to_items(ask=extra or app_name, diagram=diagram, tf=tf, region=region)
     cost = price_items(items)
     return {"diagram": diagram, "terraform": tf, "cost": cost}
