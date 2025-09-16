@@ -9,93 +9,224 @@ const apiKeyInput  = el('apiKey');
 const btnGenerate  = el('btnGenerate');
 const statusEl     = el('status');
 const diagramHost  = el('diagramHost');
-const tfHost       = el('terraformHost');
-const costHost     = el('costHost');
-const confluenceBox= el('confluenceDoc');
-const copyBtn      = el('btnCopyConfluence');
-const dlBtn        = el('btnDlConfluence');   // 🔹 added
+const btnSvg       = el('btnSvg');
+const btnPng       = el('btnPng');
+const tfOut        = el('tfOut');
+const btnCopyTf    = el('btnCopyTf');
+const btnDlTf      = el('btnDlTf');
+const pricingDiv   = el('pricing');
 
-btnGenerate.addEventListener('click', async () => {
-  statusEl.textContent = "Generating...";
-  diagramHost.innerHTML = "";
-  tfHost.innerHTML = "";
-  costHost.innerHTML = "";
-  confluenceBox.value = "";
-  copyBtn.style.display = "none";
-  if (dlBtn) dlBtn.style.display = "none";   // 🔹 reset
+// 🔹 Confluence elements
+const confluenceBox   = el('confluenceDoc');
+const btnCopyConf     = el('btnCopyConfluence');
+const btnDlConf       = el('btnDlConfluence');
+
+let lastSvg = '';
+let lastDiagram = '';
+let lastTf = '';
+let lastCost = null;
+let lastConfluence = '';
+
+function lastMileSanitize(diagram) {
+  diagram = diagram.replace(/^(\s*subgraph[^\n;]*);+\s*$/gm, '$1');
+  diagram = diagram.replace(/(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))/g, '$1\n');
+  return diagram;
+}
+
+async function callAzureMcp() {
+  const appName = appNameInput.value.trim() || '3-tier web app';
+  const prompt  = promptInput.value.trim();
+  const region  = regionInput.value.trim();
+  const apiKey  = apiKeyInput.value.trim();
+
+  if (!apiKey) {
+    statusEl.textContent = 'Please enter your x-api-key.';
+    return;
+  }
+
+  btnGenerate.disabled = true;
+  statusEl.textContent = 'Generating...';
 
   try {
-    const payload = {
-      resources: JSON.parse(promptInput.value || "[]"),
-      region: regionInput.value || "eastus"
-    };
+    const body = { app_name: appName, prompt };
+    if (region) body.region = region;
 
-    const resp = await fetch("http://localhost:8000/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const res = await fetch('/api/mcp/azure/diagram-tf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify(body)
     });
 
-    const data = await resp.json();
-    statusEl.textContent = "Done.";
-
-    // Diagram
-    if (data.diagram) {
-      diagramHost.innerHTML = `<h2>Architecture Diagram</h2><div class="mermaid">${escapeHtml(data.diagram)}</div>`;
-      mermaid.init(undefined, diagramHost.querySelectorAll(".mermaid"));
-    } else {
-      diagramHost.textContent = "No diagram generated.";
+    if (!res.ok) {
+      const errText = await res.text();
+      diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(errText)}</pre>`;
+      throw new Error(`Backend error (${res.status})`);
     }
 
-    // Terraform
-    if (data.terraform) {
-      tfHost.innerHTML = `<h2>Terraform Code</h2><pre class="code-block">${escapeHtml(data.terraform)}</pre>`;
-    }
+    const data = await res.json();
+    lastDiagram    = (data.diagram || '').trim();
+    lastTf         = (data.terraform || '').trim();
+    lastCost       = data.cost || null;
+    lastConfluence = (data.confluence_doc || '').trim();
 
-    // Cost table
-    if (data.cost && Object.keys(data.cost).length > 0) {
-      let html = "<h2>Cost Estimates</h2><table><thead><tr><th>Resource</th><th>Monthly Cost</th></tr></thead><tbody>";
-      for (const [res, val] of Object.entries(data.cost)) {
-        html += `<tr><td>${escapeHtml(res)}</td><td>${escapeHtml(val)}</td></tr>`;
-      }
-      html += "</tbody></table>";
-      costHost.innerHTML = html;
-    }
+    const safeDiagram = lastMileSanitize(lastDiagram);
+    await renderMermaidToSvg(safeDiagram);
+    renderTerraform(lastTf);
+    renderPricing(lastCost);
+    renderConfluence(lastConfluence);
 
-    // Confluence doc
-    if (data.confluence_doc) {
-      confluenceBox.value = data.confluence_doc;
-      copyBtn.style.display = "inline-block";
-      if (dlBtn) dlBtn.style.display = "inline-block";  // 🔹 show download
-    } else {
-      confluenceBox.value = "No Confluence documentation available.";
-      copyBtn.style.display = "none";
-      if (dlBtn) dlBtn.style.display = "none";
+    statusEl.textContent = 'Done.';
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = e.message || 'Request failed.';
+    if (!diagramHost.innerHTML) {
+      diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(lastDiagram || '(no diagram)')}</pre>`;
     }
-
-  } catch (err) {
-    statusEl.textContent = "Error: " + err.message;
+  } finally {
+    btnGenerate.disabled = false;
   }
+}
+
+async function renderMermaidToSvg(diagramText) {
+  const id = 'arch-' + Math.random().toString(36).slice(2, 9);
+  try {
+    const { svg } = await mermaid.render(id, diagramText);
+    lastSvg = svg;
+    diagramHost.innerHTML = svg;
+    diagramHost.querySelector('svg')?.setAttribute('width', '100%');
+  } catch (err) {
+    console.error('Mermaid render error', err);
+    diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(diagramText)}</pre>`;
+  }
+}
+
+function renderTerraform(tf) { tfOut.value = tf || ''; }
+
+function renderPricing(costObj) {
+  if (!costObj || !Array.isArray(costObj.items)) {
+    pricingDiv.innerHTML = '<p class="muted">No cost data.</p>';
+    return;
+  }
+  const rows = costObj.items.map(it => {
+    const size = it.size_gb ? `${it.size_gb} GB` : '';
+    const hours = it.hours ? `${it.hours} h/mo` : '';
+    return `
+      <tr>
+        <td>${it.cloud}</td>
+        <td>${it.service}</td>
+        <td>${escapeHtml(it.sku || '')}</td>
+        <td>${it.region}</td>
+        <td style="text-align:right">${it.qty}</td>
+        <td>${size}</td>
+        <td>${hours}</td>
+        <td style="text-align:right">$${Number(it.unit_monthly || 0).toFixed(2)}</td>
+        <td style="text-align:right">$${Number(it.monthly || 0).toFixed(2)}</td>
+      </tr>`;
+  }).join('');
+  const total = Number(costObj.total_estimate || 0).toFixed(2);
+  const notes = (costObj.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
+  pricingDiv.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Cloud</th><th>Service</th><th>SKU</th><th>Region</th>
+          <th style="text-align:right">Qty</th><th>Size</th><th>Hours</th>
+          <th style="text-align:right">Unit/Month</th>
+          <th style="text-align:right">Monthly</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="8" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
+          <td style="text-align:right">$${total}</td>
+        </tr>
+      </tfoot>
+    </table>
+    ${notes ? `<p style="margin-top:8px"><strong>Notes:</strong></p><ul>${notes}</ul>` : ''}
+  `;
+}
+
+// 🔹 Render Confluence documentation
+function renderConfluence(text) {
+  if (!confluenceBox) return;
+  confluenceBox.value = text || 'No Confluence documentation available.';
+  if (text) {
+    btnCopyConf.style.display = 'inline-block';
+    btnDlConf.style.display = 'inline-block';
+  } else {
+    btnCopyConf.style.display = 'none';
+    btnDlConf.style.display = 'none';
+  }
+}
+
+function escapeHtml(s) { 
+  return (s || '').replace(/[&<>"]/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]
+  ));
+}
+
+btnSvg.addEventListener('click', () => {
+  if (!lastSvg) return;
+  const blob = new Blob([lastSvg], { type: 'image/svg+xml;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'archgenie-diagram.svg';
+  a.click(); URL.revokeObjectURL(a.href);
 });
 
-function copyConfluence() {
-  confluenceBox.select();
-  document.execCommand("copy");
-  alert("Confluence documentation copied!");
-}
+btnPng.addEventListener('click', async () => {
+  if (!lastSvg) return;
+  const svgEl = new DOMParser().parseFromString(lastSvg, 'image/svg+xml').documentElement;
+  const svgText = new XMLSerializer().serializeToString(svgEl);
+  const canvas = document.createElement('canvas');
+  const bbox = diagramHost.querySelector('svg')?.getBBox?.();
+  const width = Math.max(1024, (bbox?.width || 1024));
+  const height = Math.max(768, (bbox?.height || 768));
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0);
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = 'archgenie-diagram.png';
+    a.click();
+  };
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+});
 
-// 🔹 new function for download
-function downloadConfluence() {
-  const blob = new Blob([confluenceBox.value], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "archgenie_confluence.txt";
-  a.click();
-  URL.revokeObjectURL(url);
-}
+btnCopyTf.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(tfOut.value || '');
+    btnCopyTf.textContent = 'Copied!';
+    setTimeout(() => btnCopyTf.textContent = 'Copy', 1000);
+  } catch(e) { console.error(e); }
+});
 
-function escapeHtml(text) {
-  if (!text) return "";
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+btnDlTf.addEventListener('click', () => {
+  const blob = new Blob([tfOut.value || ''], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'main.tf';
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+// 🔹 Confluence button handlers
+btnCopyConf.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(confluenceBox.value || '');
+    btnCopyConf.textContent = 'Copied!';
+    setTimeout(() => btnCopyConf.textContent = 'Copy', 1000);
+  } catch(e) { console.error(e); }
+});
+
+btnDlConf.addEventListener('click', () => {
+  const blob = new Blob([confluenceBox.value || ''], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'archgenie_confluence.txt';
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+el('btnGenerate').addEventListener('click', callAzureMcp);

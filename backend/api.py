@@ -1,15 +1,9 @@
-import os
-import json
-import time
-import requests
-from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Body
+import os, re, json, time, random, requests
+from typing import List, Dict, Any, Tuple, Optional
+from fastapi import FastAPI, Depends, Header, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# =========================
-# Env & Config
-# =========================
 load_dotenv()
 
 CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
@@ -18,199 +12,163 @@ AZURE_OPENAI_ENDPOINT    = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip
 AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
 
-USE_LIVE_AZURE_PRICES = os.getenv("USE_LIVE_AZURE_PRICES", "true").lower() == "true"
-USE_MCP_PRICING       = os.getenv("USE_MCP_PRICING", "false").lower() == "true"
-HOURS_PER_MONTH       = float(os.getenv("HOURS_PER_MONTH", "730"))
-DEFAULT_REGION        = os.getenv("DEFAULT_REGION", "eastus")
+DEFAULT_REGION = "eastus"
+FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
 
-# =========================
-# FastAPI Setup
-# =========================
-app = FastAPI(title="ArchGenie API", version="1.1.0")
+def require_api_key(x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != CAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
+app = FastAPI(title="ArchGenie Azure Backend", version="patched")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# =========================
-# Azure Pricing Helpers
-# =========================
-_price_cache: Dict[str, tuple] = {}
-
-def cache_get(key: str) -> Optional[float]:
-    v = _price_cache.get(key)
-    if v:
-        price, exp = v
-        if exp > time.time():
-            return price
-    return None
-
-def cache_put(key: str, value: float, ttl_sec: int = 3600):
-    _price_cache[key] = (value, time.time() + ttl_sec)
-
-def fetch_price_from_retail(service_name: str, sku: str, region: str) -> Optional[float]:
-    """Query Azure Retail Prices API"""
-    url = "https://prices.azure.com/api/retail/prices"
-    query = f"?$filter=serviceName eq '{service_name}' and armSkuName eq '{sku}' and armRegionName eq '{region}'"
-    resp = requests.get(url + query)
-    if resp.status_code != 200:
-        return None
-
-    items = resp.json().get("Items", [])
-    for item in items:
-        if item.get("unitPrice"):
-            unit_price = float(item["unitPrice"])
-            billing_unit = item.get("unitOfMeasure", "").lower()
-            if "hour" in billing_unit:
-                return round(unit_price * HOURS_PER_MONTH, 2)
-            elif "gb" in billing_unit and "month" in billing_unit:
-                return round(unit_price, 2)
-            else:
-                return round(unit_price, 2)
-    return None
-
-def fetch_price_from_mcp(service_name: str, sku: str, region: str) -> Optional[float]:
-    """Stub for MCP pricing – replace with MCP SDK call"""
-    return None
-
-def get_azure_price(service_name: str, sku: str, region: str) -> Optional[float]:
-    """Main entrypoint for fetching dynamic price"""
-    key = f"{service_name}:{sku}:{region}"
-    cached = cache_get(key)
-    if cached is not None:
-        return cached
-
-    if USE_MCP_PRICING:
-        price = fetch_price_from_mcp(service_name, sku, region)
-    else:
-        price = fetch_price_from_retail(service_name, sku, region)
-
-    if price is not None:
-        cache_put(key, price)
-    return price
-
-# =========================
-# Azure OpenAI Helpers
-# =========================
-def ask_openai(prompt: str, force_json: bool = False) -> str:
-    if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
-
-    url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
-    headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_API_KEY}
-
-    payload = {
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
-    }
-    if force_json:
-        payload["response_format"] = {"type": "json_object"}
-
-    resp = requests.post(url, headers=headers, json=payload)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"OpenAI API error {resp.status_code}")
-
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
-
-# =========================
-# Confluence Documentation Builder
-# =========================
-def build_confluence_doc(resources: List[Dict[str, Any]], diagram: str, terraform: str, cost: Dict[str, Any]) -> str:
-    doc = []
-    doc.append("h1. ArchGenie – Generated Architecture")
-    doc.append("")
-    doc.append("h2. 📌 Overview")
-    doc.append("This page documents the Azure architecture generated by ArchGenie based on user request.")
-    doc.append("")
-    
-    doc.append("h2. 🔄 Architecture Diagram")
-    doc.append("{code:mermaid}")
-    doc.append(diagram.strip())
-    doc.append("{code}")
-    doc.append("")
-    
-    doc.append("h2. 📋 Resources & Estimated Costs")
-    doc.append("|| Service || SKU || Estimated Monthly Cost ||")
-    for r in resources:
-        service = r.get("serviceName")
-        sku = r.get("sku")
-        cost_val = cost.get(f"{service}:{sku}", "unavailable")
-        doc.append(f"| {service} | {sku} | {cost_val} |")
-    doc.append("")
-    
-    doc.append("h2. ⚙️ Terraform Code")
-    doc.append("{code:terraform}")
-    doc.append(terraform.strip())
-    doc.append("{code}")
-    doc.append("")
-    
-    doc.append("h2. 🚧 Notes & Assumptions")
-    doc.append("* Costs are based on live Azure Retail API (or MCP if enabled).")
-    doc.append("* Some services may require assumed usage (GB/month, requests).")
-    doc.append("* Terraform snippets may require resource group / naming adjustments.")
-    
-    return "\n".join(doc)
-
-# =========================
-# Architecture Processing
-# =========================
-def process_architecture_request(resources: List[Dict[str, Any]], region: str = DEFAULT_REGION) -> Dict[str, Any]:
-    output = {"diagram": None, "terraform": None, "cost": {}, "confluence_doc": None, "errors": []}
-
-    # Cost Estimation
-    if USE_LIVE_AZURE_PRICES:
-        for r in resources:
-            service = r.get("serviceName")
-            sku = r.get("sku")
-            if not service or not sku:
-                continue
-            try:
-                price = get_azure_price(service, sku, region)
-                if price is None:
-                    output["cost"][f"{service}:{sku}"] = "unavailable"
-                else:
-                    output["cost"][f"{service}:{sku}"] = f"${price}/month"
-            except Exception as e:
-                output["errors"].append(f"Cost lookup failed for {service}:{sku} - {str(e)}")
-
-    # Diagram generation
-    try:
-        diagram_prompt = f"Generate a mermaid diagram for Azure resources: {json.dumps(resources)}"
-        diagram = ask_openai(diagram_prompt, force_json=False)
-        output["diagram"] = diagram
-    except Exception as e:
-        output["errors"].append(f"Diagram generation failed: {str(e)}")
-
-    # Terraform code
-    try:
-        tf_prompt = f"Generate Terraform code for Azure resources: {json.dumps(resources)}"
-        tf_code = ask_openai(tf_prompt, force_json=False)
-        output["terraform"] = tf_code
-    except Exception as e:
-        output["errors"].append(f"Terraform generation failed: {str(e)}")
-
-    # Confluence doc
-    try:
-        output["confluence_doc"] = build_confluence_doc(resources, output["diagram"] or "", output["terraform"] or "", output["cost"])
-    except Exception as e:
-        output["errors"].append(f"Confluence doc build failed: {str(e)}")
-
-    return output
-
-# =========================
-# API Routes
-# =========================
-@app.post("/generate")
-def generate_architecture(payload: Dict[str, Any] = Body(...)):
-    resources = payload.get("resources", [])
-    region = payload.get("region", DEFAULT_REGION)
-    return process_architecture_request(resources, region)
-
-@app.get("/healthz")
-def health_check():
+@app.get("/")
+def health():
     return {"status": "ok"}
+
+# === Helpers ===
+def sanitize_mermaid(src: str) -> str:
+    if not src:
+        return "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
+
+    s = src.strip()
+
+    # Force header
+    header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
+    if header_re.search(s):
+        s = header_re.sub("graph TD", s, count=1)
+    else:
+        s = "graph TD\n" + s
+
+    lines = []
+    for line in s.splitlines():
+        just = line.strip()
+        # Drop trailing semicolons
+        just = re.sub(r';\s*$', '', just)
+        if just:
+            lines.append(just)
+
+    s = "\n".join(lines)
+
+    # Remove commas & newlines inside labels
+    s = re.sub(r'\[([^\]]+)\]', lambda m: "[" + m.group(1).replace("\n"," ").replace(",","") + "]", s)
+
+    # Collapse multiple spaces
+    s = re.sub(r'[ \t]+', ' ', s)
+
+    # Always end with a newline
+    if not s.endswith("\n"):
+        s += "\n"
+
+    return s
+
+
+def strip_fences(text: str) -> str:
+    if not text: return ""
+    s = text.strip()
+    m = re.match(r"^```.*?\n([\s\S]*?)```$", s)
+    return m.group(1).strip() if m else s
+
+def extract_json_or_fences(content: str) -> Dict[str, str]:
+    try:
+        obj = json.loads(content)
+        return {
+            "diagram": strip_fences(obj.get("diagram","")),
+            "terraform": strip_fences(obj.get("terraform",""))
+        }
+    except Exception:
+        out = {"diagram":"","terraform":""}
+        m = re.search(r"```mermaid\s*\n([\s\S]*?)```", content, re.I)
+        if m: out["diagram"] = m.group(1).strip()
+        m = re.search(r"```(terraform|hcl)\s*\n([\s\S]*?)```", content, re.I)
+        if m: out["terraform"] = m.group(2).strip()
+        return out
+
+def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
+    if not (AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT):
+        raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
+    url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+    headers = {"Content-Type":"application/json","api-key":AZURE_OPENAI_API_KEY}
+    body = {"messages": messages, "temperature":0.2}
+    if AZURE_OPENAI_FORCE_JSON:
+        body["response_format"] = {"type":"json_object"}
+    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=60)
+    if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
+    return r.json()
+
+# === Fallback deterministic diagram ===
+def build_mermaid_from_items() -> str:
+    return """graph TD
+IN[Internet] --> FD[Azure Front Door]
+FD --> AGW[Azure Application Gateway (WAF v2)]
+AGW --> WEB[Web Tier - Azure App Service]
+WEB --> APP[Application Tier - Azure App Service]
+APP --> SQL[Azure SQL Database]
+"""
+
+def price_items(items: List[dict]) -> dict:
+    total = 0.0
+    out = []
+    for it in items:
+        if it["service"]=="app_service":
+            monthly = 50.0 * it.get("qty",1)
+        elif it["service"]=="azure_sql":
+            monthly = 75.0 * it.get("qty",1)
+        elif it["service"]=="storage":
+            monthly = 10.0 * it.get("qty",1)
+        else:
+            monthly = 20.0 * it.get("qty",1)
+        total += monthly
+        out.append({**it,"monthly":monthly})
+    return {"currency":"USD","total_estimate": round(total,2), "items": out}
+
+# === Main endpoint ===
+@app.post("/mcp/azure/diagram-tf")
+def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
+    app_name = payload.get("app_name", "3-tier web app")
+    extra = payload.get("prompt", "")
+    region = payload.get("region", DEFAULT_REGION)
+
+    system = (
+        "You are ArchGenie's Azure MCP. "
+        "Return JSON ONLY with keys: "
+        '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
+    )
+    user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
+
+    try:
+        result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
+        content = result["choices"][0]["message"]["content"]
+        parsed = extract_json_or_fences(content)
+
+        # Try AOAI diagram first
+        diagram = sanitize_mermaid(parsed.get("diagram", ""))
+        if not diagram.strip():
+            diagram = build_mermaid_from_items()
+
+        tf = strip_fences(parsed.get("terraform",""))
+        if not tf.strip():
+            tf = "# Terraform failed; check backend logs"
+
+    except Exception:
+        if not FAIL_OPEN:
+            raise
+        diagram = build_mermaid_from_items()
+        tf = "# Terraform failed; check backend logs"
+
+    # Simplified cost
+    items = []
+    if "app service" in diagram.lower(): items.append({"cloud":"azure","service":"app_service","sku":"S1","qty":2})
+    if "sql" in diagram.lower(): items.append({"cloud":"azure","service":"azure_sql","sku":"S0","qty":1})
+    if "storage" in diagram.lower(): items.append({"cloud":"azure","service":"storage","sku":"LRS","qty":1})
+
+    cost = {"currency":"USD","total_estimate": sum([50 for _ in items]), "items": items}
+    print("=== DIAGRAM SENT TO FE ===")
+    print(repr(diagram))
+    return {"diagram": diagram, "terraform": tf, "cost": cost}
