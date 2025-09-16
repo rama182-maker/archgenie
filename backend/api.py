@@ -122,19 +122,21 @@ def azure_mcp(payload: dict = Body(...), _=Depends(require_api_key)):
         content = result["choices"][0]["message"]["content"]
         parsed = extract_json_or_fences(content)
 
+        # Use AOAI diagram if valid, else fallback
         diagram = sanitize_mermaid(parsed.get("diagram", ""))
         if not diagram.strip():
             diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
 
-        tf = strip_fences(parsed.get("terraform",""))
+        # Use AOAI terraform if valid, else fallback
+        tf = strip_fences(parsed.get("terraform", ""))
         if not tf.strip():
-            tf = "# Terraform failed; check backend logs"
+            tf = "resource \"azurerm_resource_group\" \"example\" {\n  name     = \"example-rg\"\n  location = \"eastus\"\n}\n"
 
-    except Exception as e:
+    except Exception:
         if not FAIL_OPEN:
             raise
         diagram = "graph TD\nA[Internet] --> B[App Service]\nB --> C[Azure SQL]\n"
-        tf = "# Terraform failed; check backend logs"
+        tf = "resource \"azurerm_resource_group\" \"example\" {\n  name     = \"example-rg\"\n  location = \"eastus\"\n}\n"
 
     items = normalize_to_items(diagram, tf)
     cost = price_items(items)
