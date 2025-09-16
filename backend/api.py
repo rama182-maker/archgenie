@@ -21,7 +21,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Azure Backend", version="enhanced")
+app = FastAPI(title="ArchGenie Azure Backend", version="cost-fixed")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -115,20 +115,31 @@ def price_items(items: List[dict], region: str) -> dict:
         service = it.get("service")
         sku = it.get("sku")
         qty = it.get("qty",1)
+        unit = 0.0
+        monthly = 0.0
+
         if service == "app_service":
             unit = get_azure_price("App Service", sku or "S1", region)
-            monthly = unit * 730 * qty if unit else 50.0*qty
+            monthly = (unit * 730) * qty if unit else 50.0 * qty
+
         elif service == "azure_sql":
             unit = get_azure_price("SQL Database", sku or "S0", region)
-            monthly = unit * 730 * qty if unit else 75.0*qty
+            monthly = (unit * 730) * qty if unit else 75.0 * qty
+
         elif service == "storage":
             unit = get_azure_price("Storage", sku or "LRS", region)
-            monthly = unit * qty if unit else 10.0*qty
+            monthly = unit * qty if unit else 10.0 * qty
+
         else:
-            unit = 0.0
-            monthly = 20.0*qty
+            monthly = 20.0 * qty
+
         total += monthly
-        out.append({**it,"monthly": round(monthly,2),"unit_monthly": round(unit*730,2) if unit else 0.0})
+        out.append({
+            **it,
+            "unit_monthly": round(unit * 730,2) if unit else 0.0,
+            "monthly": round(monthly,2)
+        })
+
     return {"currency":"USD","total_estimate": round(total,2), "items": out}
 
 # === Confluence doc builder ===
