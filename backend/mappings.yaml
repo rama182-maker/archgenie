@@ -1,0 +1,474 @@
+aws:
+  # -------------------
+  # Compute
+  # -------------------
+  aws_instance:
+    service_code: AmazonEC2
+    key: instanceType
+    attr: instance_type
+    billing: hourly
+  aws_launch_configuration:
+    service_code: AmazonEC2
+    key: instanceType
+    attr: instance_type
+    billing: hourly
+  aws_autoscaling_group:
+    service_code: AmazonEC2
+    key: instanceType
+    attr: instance_type
+    billing: hourly
+  aws_eks_cluster:
+    service_code: AmazonEKS
+    key: usagetype
+    attr: version
+    billing: hourly
+  aws_eks_node_group:
+    service_code: AmazonEC2
+    key: instanceType
+    attr: instance_types[0]
+    billing: hourly
+  aws_ecs_cluster:
+    service_code: AmazonECS
+    key: usagetype
+    attr: name
+    billing: hourly
+  aws_ecs_service:
+    service_code: AmazonECS
+    key: usagetype
+    attr: launch_type
+    billing: hourly
+  aws_lambda_function:
+    service_code: AWSLambda
+    key: usagetype
+    attr: runtime
+    billing: monthly
+  aws_batch_compute_environment:
+    service_code: AWSBatch
+    key: instanceType
+    attr: compute_resources.instance_type
+    billing: hourly
+
+  # -------------------
+  # Storage
+  # -------------------
+  aws_s3_bucket:
+    service_code: AmazonS3
+    key: storageClass
+    attr: storage_class
+    billing: per_gb
+  aws_s3_bucket_object:
+    service_code: AmazonS3
+    key: storageClass
+    attr: storage_class
+    billing: per_gb
+  aws_ebs_volume:
+    service_code: AmazonEC2
+    key: volumeType
+    attr: type
+    billing: per_gb
+  aws_efs_file_system:
+    service_code: AmazonEFS
+    key: storageClass
+    attr: throughput_mode
+    billing: per_gb
+  aws_fsx_windows_file_system:
+    service_code: AmazonFSx
+    key: deploymentType
+    attr: storage_type
+    billing: per_gb
+  aws_fsx_lustre_file_system:
+    service_code: AmazonFSx
+    key: deploymentType
+    attr: storage_type
+    billing: per_gb
+  aws_glacier_vault:
+    service_code: AmazonGlacier
+    key: storageClass
+    attr: name
+    billing: per_gb
+
+  # -------------------
+  # Database
+  # -------------------
+  aws_rds_instance:
+    service_code: AmazonRDS
+    key: instanceType
+    attr: instance_class
+    billing: hourly
+  aws_rds_cluster:
+    service_code: AmazonRDS
+    key: instanceType
+    attr: engine
+    billing: hourly
+  aws_rds_cluster_instance:
+    service_code: AmazonRDS
+    key: instanceType
+    attr: instance_class
+    billing: hourly
+  aws_dynamodb_table:
+    service_code: AmazonDynamoDB
+    key: usagetype
+    attr: billing_mode
+    billing: monthly
+  aws_redshift_cluster:
+    service_code: AmazonRedshift
+    key: nodeType
+    attr: node_type
+    billing: hourly
+  aws_neptune_cluster:
+    service_code: AmazonNeptune
+    key: instanceType
+    attr: instance_class
+    billing: hourly
+  aws_docdb_cluster:
+    service_code: AmazonDocDB
+    key: instanceType
+    attr: instance_class
+    billing: hourly
+  aws_elasticsearch_domain:
+    service_code: AmazonES
+    key: instanceType
+    attr: instance_type
+    billing: hourly
+  aws_opensearch_domain:
+    service_code: AmazonOpenSearchService
+    key: instanceType
+    attr: instance_type
+    billing: hourly
+
+  # -------------------
+  # Networking
+  # -------------------
+  aws_vpc:
+    service_code: AmazonVPC
+    key: usagetype
+    attr: id
+    billing: monthly
+  aws_subnet:
+    service_code: AmazonVPC
+    key: usagetype
+    attr: id
+    billing: monthly
+  aws_internet_gateway:
+    service_code: AmazonVPC
+    key: usagetype
+    attr: id
+    billing: monthly
+  aws_nat_gateway:
+    service_code: AmazonVPC
+    key: usagetype
+    attr: id
+    billing: hourly
+  aws_vpn_connection:
+    service_code: AmazonVPC
+    key: usagetype
+    attr: id
+    billing: hourly
+  aws_elb:
+    service_code: AWSELB
+    key: usagetype
+    attr: name
+    billing: hourly
+  aws_alb:
+    service_code: AmazonElasticLoadBalancing
+    key: usagetype
+    attr: name
+    billing: hourly
+  aws_lb:
+    service_code: AmazonElasticLoadBalancing
+    key: usagetype
+    attr: name
+    billing: hourly
+  aws_cloudfront_distribution:
+    service_code: AmazonCloudFront
+    key: usagetype
+    attr: price_class
+    billing: per_gb
+  aws_route53_zone:
+    service_code: AmazonRoute53
+    key: usagetype
+    attr: name
+    billing: monthly
+
+  # -------------------
+  # Security
+  # -------------------
+  aws_kms_key:
+    service_code: AWSKMS
+    key: usagetype
+    attr: description
+    billing: monthly
+  aws_waf_web_acl:
+    service_code: AWSWAF
+    key: usagetype
+    attr: metric_name
+    billing: monthly
+  aws_shield_protection:
+    service_code: AWSShield
+    key: usagetype
+    attr: name
+    billing: monthly
+  aws_guardduty_detector:
+    service_code: AmazonGuardDuty
+    key: usagetype
+    attr: enable
+    billing: monthly
+  aws_securityhub_account:
+    service_code: AWSecurityHub
+    key: usagetype
+    attr: enable_default_standards
+    billing: monthly
+
+  # -------------------
+  # Monitoring & Messaging
+  # -------------------
+  aws_cloudwatch_log_group:
+    service_code: AmazonCloudWatch
+    key: usagetype
+    attr: name
+    billing: monthly
+  aws_sqs_queue:
+    service_code: AmazonSQS
+    key: usagetype
+    attr: name
+    billing: monthly
+  aws_sns_topic:
+    service_code: AmazonSNS
+    key: usagetype
+    attr: name
+    billing: monthly
+  aws_api_gateway_rest_api:
+    service_code: AmazonApiGateway
+    key: usagetype
+    attr: name
+    billing: monthly
+  aws_kinesis_stream:
+    service_code: AmazonKinesis
+    key: shardHour
+    attr: shard_count
+    billing: hourly
+  aws_kinesis_firehose_delivery_stream:
+    service_code: AmazonKinesisFirehose
+    key: usagetype
+    attr: name
+    billing: hourly
+  aws_mq_broker:
+    service_code: AmazonMQ
+    key: instanceType
+    attr: host_instance_type
+    billing: hourly
+
+azure:
+  # -------------------
+  # Compute
+  # -------------------
+  azurerm_virtual_machine:
+    service: Virtual Machines
+    key: armSkuName
+    attr: size
+    billing: hourly
+  azurerm_virtual_machine_scale_set:
+    service: Virtual Machines
+    key: armSkuName
+    attr: sku
+    billing: hourly
+  azurerm_container_group:
+    service: Container Instances
+    key: armSkuName
+    attr: sku
+    billing: hourly
+  azurerm_container_registry:
+    service: Container Registry
+    key: armSkuName
+    attr: sku
+    billing: monthly
+  azurerm_function_app:
+    service: Functions
+    key: armSkuName
+    attr: sku
+    billing: monthly
+  azurerm_app_service_plan:
+    service: App Service
+    key: armSkuName
+    attr: sku.tier
+    billing: hourly
+  azurerm_app_service:
+    service: App Service
+    key: armSkuName
+    attr: sku.tier
+    billing: hourly
+  azurerm_kubernetes_cluster:
+    service: Virtual Machines
+    key: armSkuName
+    attr: default_node_pool.vm_size
+    billing: hourly
+
+  # -------------------
+  # Storage
+  # -------------------
+  azurerm_storage_account:
+    service: Storage
+    key: armSkuName
+    attr: account_replication_type
+    billing: per_gb
+  azurerm_managed_disk:
+    service: Storage
+    key: armSkuName
+    attr: storage_account_type
+    billing: per_gb
+  azurerm_storage_container:
+    service: Storage
+    key: armSkuName
+    attr: name
+    billing: per_gb
+  azurerm_storage_share:
+    service: Storage
+    key: armSkuName
+    attr: name
+    billing: per_gb
+  azurerm_storage_queue:
+    service: Storage
+    key: armSkuName
+    attr: name
+    billing: per_gb
+
+  # -------------------
+  # Database
+  # -------------------
+  azurerm_sql_database:
+    service: SQL Database
+    key: armSkuName
+    attr: sku_name
+    billing: monthly
+  azurerm_sql_managed_instance:
+    service: SQL Database
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_cosmosdb_account:
+    service: Azure Cosmos DB
+    key: armSkuName
+    attr: offer_type
+    billing: hourly
+  azurerm_mysql_server:
+    service: Azure Database for MySQL
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_postgresql_server:
+    service: Azure Database for PostgreSQL
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_mariadb_server:
+    service: Azure Database for MariaDB
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+
+  # -------------------
+  # Networking
+  # -------------------
+  azurerm_virtual_network:
+    service: Virtual Network
+    key: armSkuName
+    attr: name
+    billing: monthly
+  azurerm_subnet:
+    service: Virtual Network
+    key: armSkuName
+    attr: name
+    billing: monthly
+  azurerm_public_ip:
+    service: Public IP Addresses
+    key: armSkuName
+    attr: allocation_method
+    billing: hourly
+  azurerm_lb:
+    service: Load Balancer
+    key: armSkuName
+    attr: sku
+    billing: hourly
+  azurerm_application_gateway:
+    service: Application Gateway
+    key: armSkuName
+    attr: sku.name
+    billing: hourly
+  azurerm_firewall:
+    service: Firewall
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_dns_zone:
+    service: DNS
+    key: armSkuName
+    attr: name
+    billing: monthly
+  azurerm_frontdoor:
+    service: Front Door
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_traffic_manager_profile:
+    service: Traffic Manager
+    key: armSkuName
+    attr: traffic_routing_method
+    billing: monthly
+
+  # -------------------
+  # Security & Monitoring
+  # -------------------
+  azurerm_key_vault:
+    service: Key Vault
+    key: armSkuName
+    attr: sku_name
+    billing: monthly
+  azurerm_application_insights:
+    service: Application Insights
+    key: armSkuName
+    attr: application_type
+    billing: monthly
+  azurerm_log_analytics_workspace:
+    service: Log Analytics
+    key: armSkuName
+    attr: sku
+    billing: per_gb
+  azurerm_monitor_autoscale_setting:
+    service: Monitor
+    key: armSkuName
+    attr: enabled
+    billing: monthly
+  azurerm_security_center_contact:
+    service: Security Center
+    key: armSkuName
+    attr: name
+    billing: monthly
+
+  # -------------------
+  # Messaging & Integration
+  # -------------------
+  azurerm_eventhub_namespace:
+    service: Event Hubs
+    key: armSkuName
+    attr: sku
+    billing: hourly
+  azurerm_servicebus_namespace:
+    service: Service Bus
+    key: armSkuName
+    attr: sku
+    billing: hourly
+  azurerm_api_management:
+    service: API Management
+    key: armSkuName
+    attr: sku_name
+    billing: hourly
+  azurerm_logic_app_workflow:
+    service: Logic Apps
+    key: armSkuName
+    attr: name
+    billing: monthly
+  azurerm_databricks_workspace:
+    service: Azure Databricks
+    key: armSkuName
+    attr: sku
+    billing: hourly
