@@ -6,24 +6,21 @@ const appNameInput = el('appName');
 const promptInput  = el('prompt');
 const regionInput  = el('region');
 const apiKeyInput  = el('apiKey');
-const providerInput = el('provider');   // 🔹 new dropdown for provider
+const providerInput= el('provider');
 const btnGenerate  = el('btnGenerate');
 const statusEl     = el('status');
 const diagramHost  = el('diagramHost');
+const providerLabel= el('providerLabel');
 const btnSvg       = el('btnSvg');
 const btnPng       = el('btnPng');
 const tfOut        = el('tfOut');
 const btnCopyTf    = el('btnCopyTf');
 const btnDlTf      = el('btnDlTf');
 const pricingDiv   = el('pricing');
-
-// 🔹 Confluence elements
-const confluenceBox   = el('confluenceDoc');
-const btnCopyConf     = el('btnCopyConfluence');
-const btnDlConf       = el('btnDlConfluence');
-
-// 🔹 CSV button
-const btnCsv = el('btnCsv');
+const confluenceBox= el('confluenceDoc');
+const btnCopyConf  = el('btnCopyConfluence');
+const btnDlConf    = el('btnDlConfluence');
+const btnCsv       = el('btnCsv');
 
 let lastSvg = '';
 let lastDiagram = '';
@@ -42,7 +39,7 @@ async function callMcp() {
   const prompt   = promptInput.value.trim();
   const region   = regionInput.value.trim();
   const apiKey   = apiKeyInput.value.trim();
-  const provider = providerInput ? providerInput.value : "azure"; // 🔹 default to Azure if dropdown missing
+  const provider = providerInput ? providerInput.value.toLowerCase() : "azure";
 
   if (!apiKey) {
     statusEl.textContent = 'Please enter your x-api-key.';
@@ -51,6 +48,7 @@ async function callMcp() {
 
   btnGenerate.disabled = true;
   statusEl.textContent = `Generating (${provider})...`;
+  providerLabel.textContent = provider.toUpperCase();
 
   try {
     const body = { app_name: appName, prompt };
@@ -112,30 +110,23 @@ function renderPricing(costObj) {
     pricingDiv.innerHTML = '<p class="muted">No cost data.</p>';
     return;
   }
-  const rows = costObj.items.map(it => {
-    const size = it.size_gb ? `${it.size_gb} GB` : '';
-    const hours = it.hours ? `${it.hours} h/mo` : '';
-    return `
+  const rows = costObj.items.map(it => `
       <tr>
-        <td>${it.cloud}</td>
-        <td>${it.service}</td>
-        <td>${escapeHtml(it.sku || '')}</td>
-        <td>${it.region}</td>
+        <td>${String(it.cloud || '')}</td>
+        <td>${String(it.resource || it.service || '')}</td>
+        <td>${escapeHtml(String(it.sku || ''))}</td>
+        <td>${escapeHtml(String(it.region || ''))}</td>
         <td style="text-align:right">${it.qty}</td>
-        <td>${size}</td>
-        <td>${hours}</td>
         <td style="text-align:right">$${Number(it.unit_monthly || 0).toFixed(2)}</td>
         <td style="text-align:right">$${Number(it.monthly || 0).toFixed(2)}</td>
-      </tr>`;
-  }).join('');
+      </tr>`).join('');
   const total = Number(costObj.total_estimate || 0).toFixed(2);
-  const notes = (costObj.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
   pricingDiv.innerHTML = `
     <table>
       <thead>
         <tr>
-          <th>Cloud</th><th>Service</th><th>SKU</th><th>Region</th>
-          <th style="text-align:right">Qty</th><th>Size</th><th>Hours</th>
+          <th>Cloud</th><th>Resource</th><th>SKU</th><th>Region</th>
+          <th style="text-align:right">Qty</th>
           <th style="text-align:right">Unit/Month</th>
           <th style="text-align:right">Monthly</th>
         </tr>
@@ -143,29 +134,22 @@ function renderPricing(costObj) {
       <tbody>${rows}</tbody>
       <tfoot>
         <tr>
-          <td colspan="8" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
+          <td colspan="6" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
           <td style="text-align:right">$${total}</td>
         </tr>
       </tfoot>
-    </table>
-    ${notes ? `<p style="margin-top:8px"><strong>Notes:</strong></p><ul>${notes}</ul>` : ''}
-  `;
+    </table>`;
 }
 
-// 🔹 Render Confluence documentation
+// Render Confluence documentation
 function renderConfluence(text) {
   if (!confluenceBox) return;
   confluenceBox.value = text || 'No Confluence documentation available.';
-  if (text) {
-    btnCopyConf.style.display = 'inline-block';
-    btnDlConf.style.display = 'inline-block';
-  } else {
-    btnCopyConf.style.display = 'none';
-    btnDlConf.style.display = 'none';
-  }
+  btnCopyConf.style.display = text ? 'inline-block' : 'none';
+  btnDlConf.style.display   = text ? 'inline-block' : 'none';
 }
 
-function escapeHtml(s) { 
+function escapeHtml(s) {
   return (s || '').replace(/[&<>"]/g, c => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]
   ));
@@ -217,7 +201,6 @@ btnDlTf.addEventListener('click', () => {
   a.click(); URL.revokeObjectURL(a.href);
 });
 
-// 🔹 Confluence button handlers
 btnCopyConf.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(confluenceBox.value || '');
@@ -234,11 +217,10 @@ btnDlConf.addEventListener('click', () => {
   a.click(); URL.revokeObjectURL(a.href);
 });
 
-// 🔹 CSV button handler (now multi-cloud)
 btnCsv?.addEventListener('click', async () => {
   const appName  = appNameInput.value.trim() || 'archgenie-app';
   const region   = regionInput.value.trim() || 'eastus';
-  const provider = providerInput ? providerInput.value : "azure";
+  const provider = providerInput ? providerInput.value.toLowerCase() : "azure";
 
   const payload = {
     app_name: appName,
