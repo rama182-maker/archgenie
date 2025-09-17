@@ -276,7 +276,8 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
                     "You are ArchGenie's AWS Terraform Generator. "
                     "Generate production-ready Terraform HCL for AWS services only. "
                     "Follow HashiCorp best practices and AWS provider 5.x syntax. "
-                    "Return ONLY valid Terraform code fenced with ```terraform."
+                    "Return JSON ONLY with keys: "
+                    '{"diagram": "", "terraform": "Terraform HCL"}'
                 )
                 user = f"Create AWS Terraform for {app_name}. Extra: {extra}. Region: {region}."
                 result_tf = aoai_chat([{"role": "system", "content": system},
