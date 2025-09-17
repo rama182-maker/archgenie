@@ -6,6 +6,7 @@ const appNameInput = el('appName');
 const promptInput  = el('prompt');
 const regionInput  = el('region');
 const apiKeyInput  = el('apiKey');
+const providerInput = el('provider');   // 🔹 new dropdown for provider
 const btnGenerate  = el('btnGenerate');
 const statusEl     = el('status');
 const diagramHost  = el('diagramHost');
@@ -36,11 +37,12 @@ function lastMileSanitize(diagram) {
   return diagram;
 }
 
-async function callAzureMcp() {
-  const appName = appNameInput.value.trim() || '3-tier web app';
-  const prompt  = promptInput.value.trim();
-  const region  = regionInput.value.trim();
-  const apiKey  = apiKeyInput.value.trim();
+async function callMcp() {
+  const appName  = appNameInput.value.trim() || '3-tier web app';
+  const prompt   = promptInput.value.trim();
+  const region   = regionInput.value.trim();
+  const apiKey   = apiKeyInput.value.trim();
+  const provider = providerInput ? providerInput.value : "azure"; // 🔹 default to Azure if dropdown missing
 
   if (!apiKey) {
     statusEl.textContent = 'Please enter your x-api-key.';
@@ -48,13 +50,13 @@ async function callAzureMcp() {
   }
 
   btnGenerate.disabled = true;
-  statusEl.textContent = 'Generating...';
+  statusEl.textContent = `Generating (${provider})...`;
 
   try {
     const body = { app_name: appName, prompt };
     if (region) body.region = region;
 
-    const res = await fetch('/api/mcp/azure/diagram-tf', {
+    const res = await fetch(`/api/mcp/${provider}/diagram-tf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
       body: JSON.stringify(body)
@@ -232,10 +234,11 @@ btnDlConf.addEventListener('click', () => {
   a.click(); URL.revokeObjectURL(a.href);
 });
 
-// 🔹 CSV button handler
+// 🔹 CSV button handler (now multi-cloud)
 btnCsv?.addEventListener('click', async () => {
-  const appName = appNameInput.value.trim() || 'archgenie-app';
-  const region  = regionInput.value.trim() || 'eastus';
+  const appName  = appNameInput.value.trim() || 'archgenie-app';
+  const region   = regionInput.value.trim() || 'eastus';
+  const provider = providerInput ? providerInput.value : "azure";
 
   const payload = {
     app_name: appName,
@@ -244,7 +247,7 @@ btnCsv?.addEventListener('click', async () => {
   };
 
   try {
-    const resp = await fetch('/api/mcp/azure/cost-csv', {
+    const resp = await fetch(`/api/mcp/${provider}/cost-csv`, {
       method: 'POST',
       headers: { "Content-Type": "application/json", "x-api-key": apiKeyInput.value.trim() },
       body: JSON.stringify(payload)
@@ -255,7 +258,7 @@ btnCsv?.addEventListener('click', async () => {
     const blob = await resp.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${appName.replace(/\s+/g,'_')}_costs.csv`;
+    a.download = `${appName.replace(/\s+/g,'_')}_${provider}_costs.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
 
@@ -264,4 +267,4 @@ btnCsv?.addEventListener('click', async () => {
   }
 });
 
-el('btnGenerate').addEventListener('click', callAzureMcp);
+el('btnGenerate').addEventListener('click', callMcp);
