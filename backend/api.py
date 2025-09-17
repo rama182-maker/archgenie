@@ -63,9 +63,11 @@ def sanitize_mermaid(src: str) -> str:
     return "\n".join(lines) + ("\n" if not s.endswith("\n") else "")
 
 def strip_fences(text: str) -> str:
-    if not text: return ""
+    if not text:
+        return ""
     s = text.strip()
-    m = re.match(r"^```.*?\n([\s\S]*?)```$", s)
+    # Match terraform, hcl, or generic code fences
+    m = re.match(r"^```(?:terraform|hcl)?\s*\n([\s\S]*?)```$", s, re.I)
     return m.group(1).strip() if m else s
 
 def extract_json_or_fences(content: str) -> Dict[str, str]:
@@ -79,7 +81,7 @@ def extract_json_or_fences(content: str) -> Dict[str, str]:
         out = {"diagram":"","terraform":""}
         m = re.search(r"```mermaid\s*\n([\s\S]*?)```", content, re.I)
         if m: out["diagram"] = m.group(1).strip()
-        m = re.search(r"```(terraform|hcl)\s*\n([\s\S]*?)```", content, re.I)
+        m = re.search(r"```(terraform|hcl)?\s*\n([\s\S]*?)```", content, re.I)
         if m: out["terraform"] = m.group(2).strip()
         return out
 
@@ -250,6 +252,7 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
             user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
             result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
             content = result["choices"][0]["message"]["content"]
+            print("AOAI raw response (Azure):", content)  # DEBUG
             parsed = extract_json_or_fences(content)
             diagram = sanitize_mermaid(parsed.get("diagram",""))
             tf = strip_fences(parsed.get("terraform",""))
@@ -276,14 +279,16 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
                     "You are ArchGenie's AWS Terraform Generator. "
                     "Generate production-ready Terraform HCL for AWS services only. "
                     "Follow HashiCorp best practices and AWS provider 5.x syntax. "
-                    "Return JSON ONLY with keys: "
+                    "Return JSON ONLY with this schema: "
                     '{"diagram": "", "terraform": "Terraform HCL"}'
                 )
                 user = f"Create AWS Terraform for {app_name}. Extra: {extra}. Region: {region}."
                 result_tf = aoai_chat([{"role": "system", "content": system},
                                        {"role": "user", "content": user}])
                 content_tf = result_tf["choices"][0]["message"]["content"]
-                tf = strip_fences(content_tf)
+                print("AOAI raw response (AWS):", content_tf)  # DEBUG
+                parsed_tf = extract_json_or_fences(content_tf)
+                tf = strip_fences(parsed_tf.get("terraform",""))
             except Exception as e:
                 print("⚠️ AOAI AWS Terraform error:", e)
                 tf = "# Terraform generation failed; check backend logs"
