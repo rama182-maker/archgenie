@@ -241,6 +241,7 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
 
     try:
         if provider == "azure":
+            # --- Azure flow fully via AOAI ---
             system = (
                 "You are ArchGenie's Azure MCP. Generate a detailed Azure reference architecture "
                 "diagram in Mermaid and Terraform. Return JSON ONLY with keys: "
@@ -250,27 +251,49 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
             result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
             content = result["choices"][0]["message"]["content"]
             parsed = extract_json_or_fences(content)
+            diagram = sanitize_mermaid(parsed.get("diagram",""))
+            tf = strip_fences(parsed.get("terraform",""))
+
         else:
-            # AWS via MCP proxy
+            # --- AWS Hybrid Flow ---
+            # 1. Get diagram from MCP proxy
             cmd = [
                 "npm", "exec", "mcp-proxy",
                 "uvx", "awslabs.aws-diagram-mcp-server",
                 "--host", AWS_MCP_HOST, "--port", AWS_MCP_PORT,
-                "--input", f"Create AWS architecture for {app_name}. Extra: {extra}. Region: {region}."
+                "--input", f"Create AWS architecture diagram for {app_name}. Extra: {extra}. Region: {region}."
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise HTTPException(status_code=500, detail=f"AWS MCP error: {result.stderr}")
-            parsed = extract_json_or_fences(result.stdout)
 
-        diagram = sanitize_mermaid(parsed.get("diagram",""))
-        tf = strip_fences(parsed.get("terraform",""))
-        if not tf.strip(): tf = "# Terraform failed; check backend logs"
+            parsed = extract_json_or_fences(result.stdout)
+            diagram = sanitize_mermaid(parsed.get("diagram", ""))
+
+            # 2. Generate Terraform using AOAI
+            try:
+                system = (
+                    "You are ArchGenie's AWS Terraform Generator. "
+                    "Generate production-ready Terraform HCL for AWS services only. "
+                    "Follow HashiCorp best practices and AWS provider 5.x syntax. "
+                    "Return ONLY valid Terraform code fenced with ```terraform."
+                )
+                user = f"Create AWS Terraform for {app_name}. Extra: {extra}. Region: {region}."
+                result_tf = aoai_chat([{"role": "system", "content": system},
+                                       {"role": "user", "content": user}])
+                content_tf = result_tf["choices"][0]["message"]["content"]
+                tf = strip_fences(content_tf)
+            except Exception as e:
+                print("⚠️ AOAI AWS Terraform error:", e)
+                tf = "# Terraform generation failed; check backend logs"
+
+        if not tf.strip():
+            tf = "# Terraform generation failed; check backend logs"
 
     except Exception:
         if not FAIL_OPEN: raise
         diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
-        tf = "# Terraform failed; check backend logs"
+        tf = "# Terraform generation failed; check backend logs"
 
     cost = estimate_cost(provider, tf, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost, provider)
