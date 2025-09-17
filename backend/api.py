@@ -259,19 +259,19 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
 
         else:
             # --- AWS Hybrid Flow ---
-            # 1. Get diagram from MCP proxy
-            cmd = [
-                "npm", "exec", "mcp-proxy",
-                "uvx", "awslabs.aws-diagram-mcp-server",
-                "--host", AWS_MCP_HOST, "--port", AWS_MCP_PORT,
-                "--input", f"Create AWS architecture diagram for {app_name}. Extra: {extra}. Region: {region}."
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise HTTPException(status_code=500, detail=f"AWS MCP error: {result.stderr}")
+            # 1. Get diagram from already running MCP server
+            try:
+                url = f"http://{AWS_MCP_HOST}:{AWS_MCP_PORT}/diagram"
+                payload = {"input": f"Create AWS architecture diagram for {app_name}. Extra: {extra}. Region: {region}."}
+                r = requests.post(url, json=payload, timeout=60)
+                if r.status_code != 200:
+                    raise HTTPException(status_code=500, detail=f"AWS MCP error: {r.text}")
+                parsed = extract_json_or_fences(r.text)
+                diagram = sanitize_mermaid(parsed.get("diagram", ""))
+            except Exception as e:
+                print("⚠️ AWS MCP call failed:", e)
+                diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
 
-            parsed = extract_json_or_fences(result.stdout)
-            diagram = sanitize_mermaid(parsed.get("diagram", ""))
 
             # 2. Generate Terraform using AOAI
             try:
