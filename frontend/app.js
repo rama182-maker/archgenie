@@ -92,19 +92,26 @@ async function callMcp() {
 
 async function renderMermaidToSvg(diagramText) {
   const id = 'arch-' + Math.random().toString(36).slice(2, 9);
+
+  // Remove class/style blocks that break rendering
+  const cleaned = diagramText
+    .split("\n")
+    .filter(line => !line.trim().startsWith("classDef") && !line.trim().startsWith("style") && !line.trim().startsWith("%%"))
+    .join("\n");
+
   try {
-    const { svg } = await mermaid.render(id, diagramText);
+    const { svg } = await mermaid.render(id, cleaned);
     lastSvg = svg;
     diagramHost.innerHTML = svg;
     diagramHost.querySelector('svg')?.setAttribute('width', '100%');
   } catch (err) {
     console.error('Mermaid render error', err);
-    // fallback: try in-place rendering
-    diagramHost.innerHTML = `<div class="mermaid">${escapeHtml(diagramText)}</div>`;
+    // fallback: let Mermaid render inline
+    diagramHost.innerHTML = `<div class="mermaid">${cleaned}</div>`;
     try {
       mermaid.contentLoaded();
     } catch (e) {
-      console.error('Fallback render failed', e);
+      console.error('Fallback Mermaid render failed', e);
     }
   }
 }
