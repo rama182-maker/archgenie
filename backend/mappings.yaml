@@ -11,17 +11,17 @@ aws:
     billing: "hourly"
     attr: "name"
 
-  aws_nat_gateway:
-    service_code: "AmazonVPC"
+  aws_autoscaling_group:
+    service_code: "AmazonEC2"
     key: "usagetype"
     billing: "hourly"
-    attr: "id"
+    attr: "name"
 
-  aws_internet_gateway:
-    service_code: "AmazonVPC"
-    key: "usagetype"
+  aws_launch_configuration:
+    service_code: "AmazonEC2"
+    key: "instanceType"
     billing: "hourly"
-    attr: "id"
+    attr: "instance_type"
 
   aws_db_instance:
     service_code: "AmazonRDS"
@@ -35,13 +35,31 @@ aws:
     billing: "per_gb"
     attr: "storage_gb"
 
+  aws_efs_file_system:
+    service_code: "AmazonEFS"
+    key: "usagetype"
+    billing: "per_gb"
+    attr: "storage_gb"
+
+  aws_elasticache_cluster:
+    service_code: "AmazonElastiCache"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "engine"
+
+  aws_nat_gateway:
+    service_code: "AmazonVPC"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "id"
+
 azure:
-  azurerm_windows_virtual_machine:
+  azurerm_linux_virtual_machine:
     service: "Virtual Machines"
     billing: "hourly"
     attr: "size"
 
-  azurerm_linux_virtual_machine:
+  azurerm_windows_virtual_machine:
     service: "Virtual Machines"
     billing: "hourly"
     attr: "size"
@@ -60,3 +78,18 @@ azure:
     service: "Storage"
     billing: "per_gb"
     attr: "account_tier"
+
+  azurerm_postgresql_flexible_server:
+    service: "Azure Database for PostgreSQL flexible server"
+    billing: "hourly"
+    attr: "sku_name"
+
+  azurerm_redis_cache:
+    service: "Redis Cache"
+    billing: "hourly"
+    attr: "sku_name"
+
+  azurerm_kubernetes_cluster:
+    service: "Azure Kubernetes Service"
+    billing: "hourly"
+    attr: "sku_tier"

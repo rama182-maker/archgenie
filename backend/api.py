@@ -1,4 +1,4 @@
-import os, re, json, requests, csv, subprocess, boto3, hcl2, yaml
+import os, re, json, requests, csv, boto3, hcl2, yaml
 from typing import List, Dict, Any
 from io import StringIO
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
@@ -29,7 +29,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="dynamic-pricing")
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="clean-diagram-pricing")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -44,7 +44,7 @@ def health():
 # Helpers
 # -----------------------------------------------------------------
 def sanitize_mermaid(src: str) -> str:
-    """Clean up and enforce a vertical tiered layout"""
+    """Ensure diagrams are tiered, clean, and styled"""
     if not src:
         return "graph TD\nInternet --> App\nApp --> Database\n"
 
@@ -55,19 +55,27 @@ def sanitize_mermaid(src: str) -> str:
     else:
         s = "graph TD\n" + s
 
-    # make nodes larger and tiered
     lines = []
     for line in s.splitlines():
         just = re.sub(r';\s*$', '', line.strip())
         if just:
             lines.append(just)
 
-    # Add some spacing and class defaults
     diagram = "\n".join(lines)
+
+    # Apply class defs & styles
     diagram += """
-classDef tier fill=#f0f9ff,stroke=#0ea5e9,stroke-width=2px;
-classDef compute fill=#fefce8,stroke=#ca8a04,stroke-width=2px;
+%% Classes
+classDef internet fill=#f0f9ff,stroke=#0ea5e9,stroke-width=2px;
+classDef public fill=#ecfdf5,stroke=#10b981,stroke-width=2px;
+classDef private fill=#ede9fe,stroke=#7c3aed,stroke-width=2px;
 classDef db fill=#fef2f2,stroke=#dc2626,stroke-width=2px;
+
+%% Auto-assign classes by keyword
+class Internet,User,Route53 internet;
+class ALB,CloudFront,LoadBalancer public;
+class EC2,AutoScaling,ECS,Lambda private;
+class RDS,DynamoDB,S3,EFS,ElastiCache db;
 """
     return diagram
 
@@ -169,7 +177,6 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
             continue
 
         cfg = mapping[rtype]
-        # Extract SKU from TF attributes
         sku = None
         if cfg.get("attr"):
             parts = cfg["attr"].split(".")
@@ -187,7 +194,6 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
         elif provider == "aws":
             unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku)
 
-        # Compute monthly
         monthly = 0.0
         if cfg["billing"] == "hourly":
             monthly = unit_price * 730 * qty
@@ -251,7 +257,7 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
         system = (
             f"You are ArchGenie's {provider.upper()} MCP. "
             f"Generate a detailed {provider.upper()} reference architecture diagram in Mermaid (flowchart TD). "
-            f"Ensure the diagram is clean, tiered (Internet, Public, Private, Database), and well spaced. "
+            "Ensure the diagram is clean, tiered (Internet, Public, Private, Database). "
             "Also generate Terraform HCL. "
             "Return JSON ONLY with keys: {\"diagram\": \"Mermaid code\", \"terraform\": \"Terraform HCL\"}"
         )
