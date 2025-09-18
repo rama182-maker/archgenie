@@ -5,93 +5,123 @@
     <title>ArchGenie</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link href="./styles.css" rel="stylesheet" />
+    <!-- Mermaid.js for diagram rendering -->
     <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
   </head>
   <body>
     <main class="wrap">
+      <!-- Header -->
       <header class="hero">
         <img src="logo.png" alt="ArchGenie Logo" class="logo" />
         <h1>ArchGenie</h1>
         <p>AI-powered Architecture Generator</p>
       </header>
 
+      <!-- Input Panel -->
       <section class="panel">
         <div class="row">
-          <label>App Name</label>
+          <label for="appName">App Name</label>
           <input id="appName" type="text" value="secure 3-tier web app" />
         </div>
         <div class="row">
-          <label>Prompt</label>
-          <textarea id="prompt" rows="3" placeholder="e.g. frontend & backend as App Service, use MSSQL database"></textarea>
+          <label for="prompt">Prompt</label>
+          <textarea
+            id="prompt"
+            rows="3"
+            placeholder="e.g. frontend & backend as App Service, use MSSQL database"
+          ></textarea>
         </div>
         <div class="row">
           <div class="col">
-            <label>Cloud Provider</label>
+            <label for="provider">Cloud Provider</label>
             <select id="provider">
               <option value="azure" selected>Azure</option>
               <option value="aws">AWS</option>
             </select>
           </div>
           <div class="col">
-            <label>Region (optional)</label>
+            <label for="region">Region (optional)</label>
             <input id="region" type="text" placeholder="eastus / us-east-1" />
           </div>
           <div class="col">
-            <label>API Key (x-api-key)</label>
+            <label for="apiKey">API Key (x-api-key)</label>
             <input id="apiKey" type="password" placeholder="super-secret-key" />
           </div>
         </div>
         <div class="row actions">
-          <button id="btnGenerate">Generate</button>
-          <span id="status" class="status"></span>
+          <button id="btnGenerate">🚀 Generate</button>
+          <span id="status" class="status" role="status" aria-live="polite"></span>
         </div>
       </section>
 
+      <!-- Results Grid -->
       <section class="grid">
+        <!-- Diagram -->
         <div class="card">
           <div class="card-head">
-            <h3>Architecture Diagram (<span id="providerLabel">Azure</span>)</h3>
+            <h3>
+              Architecture Diagram (<span id="providerLabel">Azure</span>)
+            </h3>
             <div class="right">
-              <button id="btnSvg">Download SVG</button>
-              <button id="btnPng">Download PNG</button>
+              <button id="btnSvg">⬇️ SVG</button>
+              <button id="btnPng">⬇️ PNG</button>
             </div>
           </div>
-          <div id="diagramHost" class="diagram-host"></div>
+          <!-- Host for rendered Mermaid SVG -->
+          <div id="diagramHost" class="diagram-host mermaid"></div>
         </div>
 
+        <!-- Terraform -->
         <div class="card">
           <div class="card-head">
             <h3>Terraform</h3>
             <div class="right">
-              <button id="btnCopyTf">Copy</button>
-              <button id="btnDlTf">Download .tf</button>
+              <button id="btnCopyTf">📋 Copy</button>
+              <button id="btnDlTf">⬇️ Download .tf</button>
             </div>
           </div>
-          <textarea id="tfOut" class="code" rows="16" spellcheck="false"></textarea>
+          <textarea
+            id="tfOut"
+            class="code"
+            rows="16"
+            spellcheck="false"
+            placeholder="# Terraform code will appear here"
+          ></textarea>
         </div>
 
+        <!-- Pricing -->
         <div class="card">
           <div class="card-head">
             <h3>Estimated Monthly Cost</h3>
             <div class="right">
-              <button id="btnCsv">Download CSV</button>
+              <button id="btnCsv">⬇️ Download CSV</button>
             </div>
           </div>
-          <div id="pricing"></div>
+          <div id="pricing" class="pricing-table">
+            <p class="muted">No cost data yet.</p>
+          </div>
         </div>
 
+        <!-- Confluence -->
         <div class="card">
           <div class="card-head">
             <h3>Confluence Documentation</h3>
             <div class="right">
-              <button id="btnCopyConfluence">Copy</button>
-              <button id="btnDlConfluence">Download .txt</button>
+              <button id="btnCopyConfluence">📋 Copy</button>
+              <button id="btnDlConfluence">⬇️ Download .txt</button>
             </div>
           </div>
-          <textarea id="confluenceDoc" class="code" rows="16" spellcheck="false"></textarea>
+          <textarea
+            id="confluenceDoc"
+            class="code"
+            rows="16"
+            spellcheck="false"
+            placeholder="Confluence-ready documentation will appear here"
+          ></textarea>
         </div>
       </section>
 
+      <!-- Footer -->
       <footer class="foot">
         <small>© ArchGenie</small>
       </footer>

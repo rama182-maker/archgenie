@@ -1,5 +1,5 @@
 // Mermaid init (we render manually via API)
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' }); // use loose to allow classDefs
 
 const el = (id) => document.getElementById(id);
 const appNameInput = el('appName');
@@ -29,9 +29,11 @@ let lastCost = null;
 let lastConfluence = '';
 
 function lastMileSanitize(diagram) {
+  if (!diagram) return '';
+  diagram = diagram.replace(/^```mermaid\s*/i, '').replace(/```$/, ''); // strip fences
   diagram = diagram.replace(/^(\s*subgraph[^\n;]*);+\s*$/gm, '$1');
   diagram = diagram.replace(/(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))/g, '$1\n');
-  return diagram;
+  return diagram.trim();
 }
 
 async function callMcp() {
@@ -62,7 +64,7 @@ async function callMcp() {
 
     if (!res.ok) {
       const errText = await res.text();
-      diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(errText)}</pre>`;
+      diagramHost.innerHTML = `<div class="error">${escapeHtml(errText)}</div>`;
       throw new Error(`Backend error (${res.status})`);
     }
 
@@ -82,9 +84,7 @@ async function callMcp() {
   } catch (e) {
     console.error(e);
     statusEl.textContent = e.message || 'Request failed.';
-    if (!diagramHost.innerHTML) {
-      diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(lastDiagram || '(no diagram)')}</pre>`;
-    }
+    diagramHost.innerHTML = `<div class="error">❌ Unable to render diagram</div>`;
   } finally {
     btnGenerate.disabled = false;
   }
@@ -99,14 +99,20 @@ async function renderMermaidToSvg(diagramText) {
     diagramHost.querySelector('svg')?.setAttribute('width', '100%');
   } catch (err) {
     console.error('Mermaid render error', err);
-    diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(diagramText)}</pre>`;
+    // fallback: try in-place rendering
+    diagramHost.innerHTML = `<div class="mermaid">${escapeHtml(diagramText)}</div>`;
+    try {
+      mermaid.contentLoaded();
+    } catch (e) {
+      console.error('Fallback render failed', e);
+    }
   }
 }
 
 function renderTerraform(tf) { tfOut.value = tf || ''; }
 
 function renderPricing(costObj) {
-  if (!costObj || !Array.isArray(costObj.items)) {
+  if (!costObj || !Array.isArray(costObj.items) || !costObj.items.length) {
     pricingDiv.innerHTML = '<p class="muted">No cost data.</p>';
     return;
   }
@@ -135,13 +141,12 @@ function renderPricing(costObj) {
       <tfoot>
         <tr>
           <td colspan="6" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
-          <td style="text-align:right">$${total}</td>
+          <td style="text-align:right"><b>$${total}</b></td>
         </tr>
       </tfoot>
     </table>`;
 }
 
-// Render Confluence documentation
 function renderConfluence(text) {
   if (!confluenceBox) return;
   confluenceBox.value = text || 'No Confluence documentation available.';
@@ -155,6 +160,7 @@ function escapeHtml(s) {
   ));
 }
 
+// === Buttons ===
 btnSvg.addEventListener('click', () => {
   if (!lastSvg) return;
   const blob = new Blob([lastSvg], { type: 'image/svg+xml;charset=utf-8' });
@@ -249,4 +255,4 @@ btnCsv?.addEventListener('click', async () => {
   }
 });
 
-el('btnGenerate').addEventListener('click', callMcp);
+btnGenerate.addEventListener('click', callMcp);
