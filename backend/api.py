@@ -1,4 +1,4 @@
-import os, re, json, requests, csv, subprocess, boto3, hcl2, yaml
+import os, re, json, requests, csv, boto3, hcl2, yaml
 from typing import List, Dict, Any
 from io import StringIO
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
@@ -10,16 +10,12 @@ load_dotenv()
 
 CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
 
-# === Azure Config ===
+# === Azure OpenAI Config ===
 AZURE_OPENAI_ENDPOINT    = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
 AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
-
-# === AWS Config ===
-AWS_MCP_HOST = os.getenv("AWS_MCP_HOST", "127.0.0.1")
-AWS_MCP_PORT = os.getenv("AWS_MCP_PORT", "3333")
 
 DEFAULT_REGION = "eastus"
 FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
@@ -33,7 +29,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="dynamic-pricing")
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="aoai-only")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -242,57 +238,20 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
         raise HTTPException(status_code=400, detail="Invalid provider. Use azure or aws.")
 
     try:
-        if provider == "azure":
-            # --- Azure flow fully via AOAI ---
-            system = (
-                "You are ArchGenie's Azure MCP. Generate a detailed Azure reference architecture "
-                "diagram in Mermaid and Terraform. Return JSON ONLY with keys: "
-                '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
-            )
-            user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
-            result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
-            content = result["choices"][0]["message"]["content"]
-            print("AOAI raw response (Azure):", content)  # DEBUG
-            parsed = extract_json_or_fences(content)
-            diagram = sanitize_mermaid(parsed.get("diagram",""))
-            tf = strip_fences(parsed.get("terraform",""))
-
-        else:
-            # --- AWS Hybrid Flow ---
-            # 1. Get diagram from already running MCP server
-            try:
-                url = f"http://{AWS_MCP_HOST}:{AWS_MCP_PORT}/diagram"
-                payload = {"input": f"Create AWS architecture diagram for {app_name}. Extra: {extra}. Region: {region}."}
-                r = requests.post(url, json=payload, timeout=60)
-                if r.status_code != 200:
-                    raise HTTPException(status_code=500, detail=f"AWS MCP error: {r.text}")
-                parsed = extract_json_or_fences(r.text)
-                diagram = sanitize_mermaid(parsed.get("diagram", ""))
-            except Exception as e:
-                print("⚠️ AWS MCP call failed:", e)
-                diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
-
-
-            # 2. Generate Terraform using AOAI
-            try:
-                system = (
-                    "You are ArchGenie's AWS Terraform Generator. "
-                    "Generate production-ready Terraform HCL for AWS services only. "
-                    "Follow HashiCorp best practices and AWS provider 5.x syntax. "
-                    "Return JSON ONLY with this schema: "
-                    '{"diagram": "", "terraform": "Terraform HCL"}'
-                )
-                user = f"Create AWS Terraform for {app_name}. Extra: {extra}. Region: {region}."
-                result_tf = aoai_chat([{"role": "system", "content": system},
-                                       {"role": "user", "content": user}])
-                content_tf = result_tf["choices"][0]["message"]["content"]
-                print("AOAI raw response (AWS):", content_tf)  # DEBUG
-                parsed_tf = extract_json_or_fences(content_tf)
-                tf = strip_fences(parsed_tf.get("terraform",""))
-            except Exception as e:
-                print("⚠️ AOAI AWS Terraform error:", e)
-                tf = "# Terraform generation failed; check backend logs"
-
+        # Unified AOAI flow for both Azure and AWS
+        system = (
+            f"You are ArchGenie's {provider.upper()} MCP. "
+            f"Generate a detailed {provider.upper()} reference architecture "
+            "diagram in Mermaid and Terraform. Return JSON ONLY with keys: "
+            '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
+        )
+        user = f"Create {provider.upper()} architecture for {app_name}. Extra: {extra}. Region: {region}."
+        result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
+        content = result["choices"][0]["message"]["content"]
+        print(f"AOAI raw response ({provider.upper()}):", content)  # DEBUG
+        parsed = extract_json_or_fences(content)
+        diagram = sanitize_mermaid(parsed.get("diagram",""))
+        tf = strip_fences(parsed.get("terraform",""))
         if not tf.strip():
             tf = "# Terraform generation failed; check backend logs"
 
