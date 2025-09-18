@@ -5,7 +5,7 @@
     <title>ArchGenie</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link href="./styles.css" rel="stylesheet" />
-    <!-- Mermaid.js for diagram rendering -->
+    <!-- Mermaid.js -->
     <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
   </head>
   <body>
@@ -19,38 +19,43 @@
 
       <!-- Input Panel -->
       <section class="panel">
-        <div class="row">
-          <label for="appName">App Name</label>
-          <input id="appName" type="text" value="secure 3-tier web app" />
-        </div>
-        <div class="row">
-          <label for="prompt">Prompt</label>
-          <textarea
-            id="prompt"
-            rows="3"
-            placeholder="e.g. frontend & backend as App Service, use MSSQL database"
-          ></textarea>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label for="provider">Cloud Provider</label>
-            <select id="provider">
-              <option value="azure" selected>Azure</option>
-              <option value="aws">AWS</option>
-            </select>
+        <div class="form-grid">
+          <div>
+            <label for="appName">App Name</label>
+            <input id="appName" type="text" value="secure 3-tier web app" />
           </div>
-          <div class="col">
-            <label for="region">Region (optional)</label>
-            <input id="region" type="text" placeholder="eastus / us-east-1" />
+
+          <div>
+            <label for="prompt">Prompt</label>
+            <textarea
+              id="prompt"
+              rows="3"
+              placeholder="e.g. frontend & backend as App Service, use MSSQL database"
+            ></textarea>
           </div>
-          <div class="col">
-            <label for="apiKey">API Key (x-api-key)</label>
-            <input id="apiKey" type="password" placeholder="super-secret-key" />
+
+          <div class="row-grid">
+            <div>
+              <label for="provider">Cloud Provider</label>
+              <select id="provider">
+                <option value="azure" selected>Azure</option>
+                <option value="aws">AWS</option>
+              </select>
+            </div>
+            <div>
+              <label for="region">Region (optional)</label>
+              <input id="region" type="text" placeholder="eastus / us-east-1" />
+            </div>
+            <div>
+              <label for="apiKey">API Key (x-api-key)</label>
+              <input id="apiKey" type="password" placeholder="super-secret-key" />
+            </div>
           </div>
-        </div>
-        <div class="row actions">
-          <button id="btnGenerate">🚀 Generate</button>
-          <span id="status" class="status" role="status" aria-live="polite"></span>
+
+          <div class="actions">
+            <button id="btnGenerate">🚀 Generate</button>
+            <span id="status" class="status"></span>
+          </div>
         </div>
       </section>
 
@@ -67,7 +72,6 @@
               <button id="btnPng">⬇️ PNG</button>
             </div>
           </div>
-          <!-- Host for rendered Mermaid SVG -->
           <div id="diagramHost" class="diagram-host mermaid"></div>
         </div>
 
