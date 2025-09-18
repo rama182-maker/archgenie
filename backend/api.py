@@ -46,7 +46,7 @@ def health():
 def sanitize_mermaid(src: str) -> str:
     if not src:
         return "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
-    s = src.strip()
+    s = strip_fences(src)  # strip ```mermaid fences
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
@@ -62,8 +62,8 @@ def strip_fences(text: str) -> str:
     if not text:
         return ""
     s = text.strip()
-    # Match terraform, hcl, or generic code fences
-    m = re.match(r"^```(?:terraform|hcl)?\s*\n([\s\S]*?)```$", s, re.I)
+    # Remove ```mermaid / ```terraform / ```hcl fences
+    m = re.match(r"^```(?:mermaid|terraform|hcl)?\s*\n([\s\S]*?)```$", s, re.I)
     return m.group(1).strip() if m else s
 
 def extract_json_or_fences(content: str) -> Dict[str, str]:
@@ -132,7 +132,7 @@ def get_aws_price(service_code: str, key: str, value: str) -> float:
     try:
         resp = client.get_products(
             ServiceCode=service_code,
-            Filters=[{"Type": "TERM_MATCH", "Field": key, "Value": value}],
+            Filters=[{"Type": "TERM_MATCH", "Field": key, "Value": str(value)}],
             MaxResults=1
         )
         if not resp["PriceList"]: return 0.0
@@ -158,7 +158,6 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
             continue  # skip if not in YAML
 
         cfg = mapping[rtype]
-        # Extract SKU from TF attributes
         sku = None
         if cfg.get("attr"):
             parts = cfg["attr"].split(".")
@@ -175,7 +174,7 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
         if provider == "azure":
             unit_price = get_azure_price(cfg["service"], sku, region)
         elif provider == "aws":
-            unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku)
+            unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku or cfg.get("default", ""))
 
         # Compute monthly
         monthly = 0.0
@@ -238,7 +237,6 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
         raise HTTPException(status_code=400, detail="Invalid provider. Use azure or aws.")
 
     try:
-        # Unified AOAI flow for both Azure and AWS
         system = (
             f"You are ArchGenie's {provider.upper()} MCP. "
             f"Generate a detailed {provider.upper()} reference architecture "
@@ -248,7 +246,6 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
         user = f"Create {provider.upper()} architecture for {app_name}. Extra: {extra}. Region: {region}."
         result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
         content = result["choices"][0]["message"]["content"]
-        print(f"AOAI raw response ({provider.upper()}):", content)  # DEBUG
         parsed = extract_json_or_fences(content)
         diagram = sanitize_mermaid(parsed.get("diagram",""))
         tf = strip_fences(parsed.get("terraform",""))
