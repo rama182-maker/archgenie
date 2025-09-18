@@ -1,4 +1,4 @@
-import os, re, json, requests, csv, boto3, hcl2, yaml
+import os, re, json, requests, csv, subprocess, boto3, hcl2, yaml
 from typing import List, Dict, Any
 from io import StringIO
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
@@ -10,7 +10,7 @@ load_dotenv()
 
 CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
 
-# === Azure OpenAI Config ===
+# === Azure Config ===
 AZURE_OPENAI_ENDPOINT    = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
 AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
@@ -29,7 +29,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="aoai-only")
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="dynamic-pricing")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -44,26 +44,37 @@ def health():
 # Helpers
 # -----------------------------------------------------------------
 def sanitize_mermaid(src: str) -> str:
+    """Clean up and enforce a vertical tiered layout"""
     if not src:
-        return "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
-    s = strip_fences(src)  # strip ```mermaid fences
+        return "graph TD\nInternet --> App\nApp --> Database\n"
+
+    s = src.strip()
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
     else:
         s = "graph TD\n" + s
+
+    # make nodes larger and tiered
     lines = []
     for line in s.splitlines():
         just = re.sub(r';\s*$', '', line.strip())
-        if just: lines.append(just)
-    return "\n".join(lines) + ("\n" if not s.endswith("\n") else "")
+        if just:
+            lines.append(just)
+
+    # Add some spacing and class defaults
+    diagram = "\n".join(lines)
+    diagram += """
+classDef tier fill=#f0f9ff,stroke=#0ea5e9,stroke-width=2px;
+classDef compute fill=#fefce8,stroke=#ca8a04,stroke-width=2px;
+classDef db fill=#fef2f2,stroke=#dc2626,stroke-width=2px;
+"""
+    return diagram
 
 def strip_fences(text: str) -> str:
-    if not text:
-        return ""
+    if not text: return ""
     s = text.strip()
-    # Remove ```mermaid / ```terraform / ```hcl fences
-    m = re.match(r"^```(?:mermaid|terraform|hcl)?\s*\n([\s\S]*?)```$", s, re.I)
+    m = re.match(r"^```.*?\n([\s\S]*?)```$", s)
     return m.group(1).strip() if m else s
 
 def extract_json_or_fences(content: str) -> Dict[str, str]:
@@ -77,7 +88,7 @@ def extract_json_or_fences(content: str) -> Dict[str, str]:
         out = {"diagram":"","terraform":""}
         m = re.search(r"```mermaid\s*\n([\s\S]*?)```", content, re.I)
         if m: out["diagram"] = m.group(1).strip()
-        m = re.search(r"```(terraform|hcl)?\s*\n([\s\S]*?)```", content, re.I)
+        m = re.search(r"```(terraform|hcl)\s*\n([\s\S]*?)```", content, re.I)
         if m: out["terraform"] = m.group(2).strip()
         return out
 
@@ -145,7 +156,7 @@ def get_aws_price(service_code: str, key: str, value: str) -> float:
         return 0.0
 
 # -----------------------------------------------------------------
-# Cost Estimator (YAML-driven)
+# Cost Estimator
 # -----------------------------------------------------------------
 def estimate_cost(provider: str, tf: str, region: str) -> dict:
     resources = parse_tf_resources(tf)
@@ -155,9 +166,10 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
     for res in resources:
         rtype, attrs = res["type"], res["attrs"]
         if rtype not in mapping:
-            continue  # skip if not in YAML
+            continue
 
         cfg = mapping[rtype]
+        # Extract SKU from TF attributes
         sku = None
         if cfg.get("attr"):
             parts = cfg["attr"].split(".")
@@ -169,12 +181,11 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
 
         qty = int(attrs.get("count", 1))
 
-        # Lookup pricing
         unit_price = 0.0
         if provider == "azure":
             unit_price = get_azure_price(cfg["service"], sku, region)
         elif provider == "aws":
-            unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku or cfg.get("default", ""))
+            unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku)
 
         # Compute monthly
         monthly = 0.0
@@ -239,23 +250,24 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
     try:
         system = (
             f"You are ArchGenie's {provider.upper()} MCP. "
-            f"Generate a detailed {provider.upper()} reference architecture "
-            "diagram in Mermaid and Terraform. Return JSON ONLY with keys: "
-            '{"diagram": "Mermaid code", "terraform": "Terraform HCL"}'
+            f"Generate a detailed {provider.upper()} reference architecture diagram in Mermaid (flowchart TD). "
+            f"Ensure the diagram is clean, tiered (Internet, Public, Private, Database), and well spaced. "
+            "Also generate Terraform HCL. "
+            "Return JSON ONLY with keys: {\"diagram\": \"Mermaid code\", \"terraform\": \"Terraform HCL\"}"
         )
         user = f"Create {provider.upper()} architecture for {app_name}. Extra: {extra}. Region: {region}."
         result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
         content = result["choices"][0]["message"]["content"]
         parsed = extract_json_or_fences(content)
+
         diagram = sanitize_mermaid(parsed.get("diagram",""))
         tf = strip_fences(parsed.get("terraform",""))
-        if not tf.strip():
-            tf = "# Terraform generation failed; check backend logs"
+        if not tf.strip(): tf = "# Terraform failed; check backend logs"
 
     except Exception:
         if not FAIL_OPEN: raise
-        diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
-        tf = "# Terraform generation failed; check backend logs"
+        diagram = "graph TD\nInternet --> App\nApp --> Database\n"
+        tf = "# Terraform failed; check backend logs"
 
     cost = estimate_cost(provider, tf, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost, provider)
