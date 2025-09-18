@@ -93,10 +93,10 @@ async function callMcp() {
 async function renderMermaidToSvg(diagramText) {
   const id = 'arch-' + Math.random().toString(36).slice(2, 9);
 
-  // Remove class/style blocks that break rendering
+  // Sanitize: strip only unsupported stuff
   const cleaned = diagramText
     .split("\n")
-    .filter(line => !line.trim().startsWith("classDef") && !line.trim().startsWith("style") && !line.trim().startsWith("%%"))
+    .filter(line => !line.trim().startsWith("classDef") && !line.trim().startsWith("style"))
     .join("\n");
 
   try {
@@ -106,13 +106,9 @@ async function renderMermaidToSvg(diagramText) {
     diagramHost.querySelector('svg')?.setAttribute('width', '100%');
   } catch (err) {
     console.error('Mermaid render error', err);
-    // fallback: let Mermaid render inline
+    // fallback: let Mermaid auto-render
     diagramHost.innerHTML = `<div class="mermaid">${cleaned}</div>`;
-    try {
-      mermaid.contentLoaded();
-    } catch (e) {
-      console.error('Fallback Mermaid render failed', e);
-    }
+    mermaid.contentLoaded();
   }
 }
 
