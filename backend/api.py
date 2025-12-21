@@ -1,4 +1,4 @@
-import os, re, json, requests, csv, boto3, hcl2, yaml
+import os, re, json, requests, csv, subprocess, boto3, hcl2, yaml
 from typing import List, Dict, Any
 from io import StringIO
 from fastapi import FastAPI, Depends, Header, HTTPException, Body
@@ -17,6 +17,10 @@ AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
 
+# === AWS Config ===
+AWS_MCP_HOST = os.getenv("AWS_MCP_HOST", "127.0.0.1")
+AWS_MCP_PORT = os.getenv("AWS_MCP_PORT", "3333")
+
 DEFAULT_REGION = "eastus"
 FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
 
@@ -29,7 +33,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="clean-diagram-pricing")
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="terraform-fix")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -44,40 +48,19 @@ def health():
 # Helpers
 # -----------------------------------------------------------------
 def sanitize_mermaid(src: str) -> str:
-    """Ensure diagrams are tiered, clean, and styled"""
     if not src:
-        return "graph TD\nInternet --> App\nApp --> Database\n"
-
+        return "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
     s = src.strip()
     header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
     if header_re.search(s):
         s = header_re.sub("graph TD", s, count=1)
     else:
         s = "graph TD\n" + s
-
     lines = []
     for line in s.splitlines():
         just = re.sub(r';\s*$', '', line.strip())
-        if just:
-            lines.append(just)
-
-    diagram = "\n".join(lines)
-
-    # Apply class defs & styles
-    diagram += """
-%% Classes
-classDef internet fill=#f0f9ff,stroke=#0ea5e9,stroke-width=2px;
-classDef public fill=#ecfdf5,stroke=#10b981,stroke-width=2px;
-classDef private fill=#ede9fe,stroke=#7c3aed,stroke-width=2px;
-classDef db fill=#fef2f2,stroke=#dc2626,stroke-width=2px;
-
-%% Auto-assign classes by keyword
-class Internet,User,Route53 internet;
-class ALB,CloudFront,LoadBalancer public;
-class EC2,AutoScaling,ECS,Lambda private;
-class RDS,DynamoDB,S3,EFS,ElastiCache db;
-"""
-    return diagram
+        if just: lines.append(just)
+    return "\n".join(lines) + ("\n" if not s.endswith("\n") else "")
 
 def strip_fences(text: str) -> str:
     if not text: return ""
@@ -86,19 +69,31 @@ def strip_fences(text: str) -> str:
     return m.group(1).strip() if m else s
 
 def extract_json_or_fences(content: str) -> Dict[str, str]:
+    """Extract diagram + terraform safely from JSON or fenced text."""
+    out = {"diagram": "", "terraform": ""}
     try:
         obj = json.loads(content)
-        return {
-            "diagram": strip_fences(obj.get("diagram","")),
-            "terraform": strip_fences(obj.get("terraform",""))
-        }
-    except Exception:
-        out = {"diagram":"","terraform":""}
-        m = re.search(r"```mermaid\s*\n([\s\S]*?)```", content, re.I)
-        if m: out["diagram"] = m.group(1).strip()
-        m = re.search(r"```(terraform|hcl)\s*\n([\s\S]*?)```", content, re.I)
-        if m: out["terraform"] = m.group(2).strip()
+        out["diagram"] = strip_fences(obj.get("diagram", ""))
+        out["terraform"] = strip_fences(obj.get("terraform", ""))
         return out
+    except Exception:
+        pass
+
+    mermaid_match = re.search(r"```(?:mermaid)?\s*([\s\S]*?)```", content, re.I)
+    tf_match = re.search(r"```(?:terraform|hcl)?\s*([\s\S]*?)```", content, re.I)
+    if mermaid_match:
+        out["diagram"] = mermaid_match.group(1).strip()
+    if tf_match:
+        out["terraform"] = tf_match.group(1).strip()
+
+    if not out["terraform"]:
+        m = re.search(r'(resource\s+"[a-zA-Z0-9_]+"[\s\S]+)', content, re.I)
+        if m:
+            out["terraform"] = m.group(1).strip()
+
+    out["diagram"] = out["diagram"].strip()
+    out["terraform"] = out["terraform"].strip()
+    return out
 
 def parse_tf_resources(tf: str) -> List[dict]:
     if not tf.strip():
@@ -120,13 +115,18 @@ def parse_tf_resources(tf: str) -> List[dict]:
 def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
     if not (AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT):
         raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
+
     url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
     headers = {"Content-Type":"application/json","api-key":AZURE_OPENAI_API_KEY}
     body = {"messages": messages, "temperature":0.2}
     if AZURE_OPENAI_FORCE_JSON:
         body["response_format"] = {"type":"json_object"}
-    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=60)
-    if r.status_code>=300: raise HTTPException(status_code=r.status_code, detail=r.text)
+
+    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=90)
+    print("🧠 AOAI raw status:", r.status_code)
+    if r.status_code >= 300:
+        print("❌ AOAI error body:", r.text)
+        raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
 # -----------------------------------------------------------------
@@ -151,7 +151,7 @@ def get_aws_price(service_code: str, key: str, value: str) -> float:
     try:
         resp = client.get_products(
             ServiceCode=service_code,
-            Filters=[{"Type": "TERM_MATCH", "Field": key, "Value": str(value)}],
+            Filters=[{"Type": "TERM_MATCH", "Field": key, "Value": value}],
             MaxResults=1
         )
         if not resp["PriceList"]: return 0.0
@@ -187,7 +187,6 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
             sku = val
 
         qty = int(attrs.get("count", 1))
-
         unit_price = 0.0
         if provider == "azure":
             unit_price = get_azure_price(cfg["service"], sku, region)
@@ -213,7 +212,6 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
             "unit_monthly": round(monthly/qty, 2) if qty else 0,
             "monthly": round(monthly, 2)
         })
-
     return {"currency":"USD", "total_estimate": round(total, 2), "items": items}
 
 # -----------------------------------------------------------------
@@ -248,31 +246,42 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
     app_name = payload.get("app_name","3-tier web app")
     extra = payload.get("prompt","")
     region = payload.get("region", DEFAULT_REGION)
-
     provider = provider.lower()
+
     if provider not in ["azure","aws"]:
         raise HTTPException(status_code=400, detail="Invalid provider. Use azure or aws.")
 
     try:
-        system = (
-            f"You are ArchGenie's {provider.upper()} MCP. "
-            f"Generate a detailed {provider.upper()} reference architecture diagram in Mermaid (flowchart TD). "
-            "Ensure the diagram is clean, tiered (Internet, Public, Private, Database). "
-            "Also generate Terraform HCL. "
-            "Return JSON ONLY with keys: {\"diagram\": \"Mermaid code\", \"terraform\": \"Terraform HCL\"}"
-        )
-        user = f"Create {provider.upper()} architecture for {app_name}. Extra: {extra}. Region: {region}."
-        result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
-        content = result["choices"][0]["message"]["content"]
-        parsed = extract_json_or_fences(content)
+        if provider == "azure":
+            system = (
+                "You are ArchGenie's Azure Infrastructure Generator running on GPT-4o. "
+                "Generate BOTH: (1) a clean Mermaid diagram describing the Azure architecture, "
+                "and (2) valid Terraform HCL code for the same setup. "
+                "Return ONLY a strict JSON object with two keys: diagram and terraform."
+            )
+            user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
+            result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
+            print("🧠 AOAI raw:", str(result)[:500])
+            content = result["choices"][0]["message"]["content"]
+            parsed = extract_json_or_fences(content)
+        else:
+            cmd = [
+                "npm", "exec", "mcp-proxy",
+                "uvx", "awslabs.aws-diagram-mcp-server",
+                "--host", AWS_MCP_HOST, "--port", AWS_MCP_PORT,
+                "--input", f"Create AWS architecture for {app_name}. Extra: {extra}. Region: {region}."
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail=f"AWS MCP error: {result.stderr}")
+            parsed = extract_json_or_fences(result.stdout)
 
         diagram = sanitize_mermaid(parsed.get("diagram",""))
         tf = strip_fences(parsed.get("terraform",""))
         if not tf.strip(): tf = "# Terraform failed; check backend logs"
-
     except Exception:
         if not FAIL_OPEN: raise
-        diagram = "graph TD\nInternet --> App\nApp --> Database\n"
+        diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
         tf = "# Terraform failed; check backend logs"
 
     cost = estimate_cost(provider, tf, region)
@@ -302,7 +311,6 @@ def cost_csv(provider: str, payload: dict = Body(...), _=Depends(require_api_key
         ])
     writer.writerow([]); writer.writerow(["Total","","","","","",cost.get("total_estimate",0)])
     output.seek(0)
-
     return StreamingResponse(
         output,
         media_type="text/csv",
