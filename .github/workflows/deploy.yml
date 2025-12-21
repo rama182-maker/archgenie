@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  RG_NAME: "RG-EUS-AG-DEV-01"
-  VM_NAME: "SEUSAGLNDEV01"
+  RG_NAME: "rg-eus-archgenie-01"
+  VM_NAME: "seusarchgenie01"
   STORAGE_ACCOUNT: "steusag01"
   CONTAINER: "releases"
   FRONTEND_PATH: "frontend"
@@ -232,4 +232,5 @@ jobs:
               echo \"Deployed version: \$VERSION\"
               echo \"Uvicorn PID: \$NEW_PID\"
               echo \"Logs: \$LOG_FILE\"
+
             "
