@@ -103,7 +103,7 @@ body {
 
 .status {
   font-size: 0.9rem;
-  color: #00c853; /* green for "Done" */
+  color: #00c853;
 }
 
 /* Grid for results */
@@ -143,6 +143,12 @@ body {
   padding: 1rem;
   min-height: 300px;
   overflow-x: auto;
+}
+
+/* 🔑 REQUIRED for Mermaid SVG */
+.diagram-host svg {
+  max-width: 100%;
+  height: auto;
 }
 
 /* Code areas */

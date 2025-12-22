@@ -28,11 +28,30 @@ let lastTf = '';
 let lastCost = null;
 let lastConfluence = '';
 
+/**
+ * 🔥 ONLY FIX IS HERE
+ * This safely converts single-line Mermaid (LLM output)
+ * into valid multiline Mermaid without breaking
+ * already-correct diagrams.
+ */
 function lastMileSanitize(diagram) {
   if (!diagram) return '';
-  diagram = diagram.replace(/^```mermaid\s*/i, '').replace(/```$/, ''); // strip fences
-  diagram = diagram.replace(/^(\s*subgraph[^\n;]*);+\s*$/gm, '$1');
-  diagram = diagram.replace(/(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))/g, '$1\n');
+
+  // strip ```mermaid fences if present
+  diagram = diagram.replace(/^```mermaid\s*/i, '').replace(/```$/, '');
+
+  // if already multiline, leave it alone
+  if (diagram.includes('\n')) return diagram.trim();
+
+  // normalize single-line Mermaid (CRITICAL FIX)
+  diagram = diagram
+    .replace(/^graph\s+(TD|LR|TB)/, 'graph $1\n')
+    .replace(/subgraph\s+/g, '\nsubgraph ')
+    .replace(/\sdirection\s+/g, '\n  direction ')
+    .replace(/\send\s+/g, '\nend\n')
+    .replace(/\s-->\s+/g, ' --> ')
+    .replace(/\s+/g, ' ');
+
   return diagram.trim();
 }
 
@@ -93,7 +112,6 @@ async function callMcp() {
 async function renderMermaidToSvg(diagramText) {
   const id = 'arch-' + Math.random().toString(36).slice(2, 9);
 
-  // Sanitize: strip only unsupported stuff
   const cleaned = diagramText
     .split("\n")
     .filter(line => !line.trim().startsWith("classDef") && !line.trim().startsWith("style"))
@@ -106,7 +124,6 @@ async function renderMermaidToSvg(diagramText) {
     diagramHost.querySelector('svg')?.setAttribute('width', '100%');
   } catch (err) {
     console.error('Mermaid render error', err);
-    // fallback: let Mermaid auto-render
     diagramHost.innerHTML = `<div class="mermaid">${cleaned}</div>`;
     mermaid.contentLoaded();
   }
