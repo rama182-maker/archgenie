@@ -28,27 +28,27 @@ let lastTf = '';
 let lastCost = null;
 let lastConfluence = '';
 
-/**
- * 🔥 ONLY FIX IS HERE
- * This safely converts single-line Mermaid (LLM output)
- * into valid multiline Mermaid without breaking
- * already-correct diagrams.
- */
 function lastMileSanitize(diagram) {
   if (!diagram) return '';
 
-  // strip ```mermaid fences if present
+  // strip ```mermaid fences
   diagram = diagram.replace(/^```mermaid\s*/i, '').replace(/```$/, '');
 
-  // if already multiline, leave it alone
-  if (diagram.includes('\n')) return diagram.trim();
-
-  // normalize single-line Mermaid (CRITICAL FIX)
+  // 🔥 ALWAYS normalize compact Mermaid (prompt case)
   diagram = diagram
+    // ensure graph header is isolated
     .replace(/^graph\s+(TD|LR|TB)/, 'graph $1\n')
+
+    // force subgraph blocks to multiline
     .replace(/subgraph\s+/g, '\nsubgraph ')
     .replace(/\sdirection\s+/g, '\n  direction ')
     .replace(/\send\s+/g, '\nend\n')
+
+    // break node chains
+    .replace(/\]\s*(?=[A-Za-z0-9_]+\[)/g, ']\n')
+    .replace(/\)\s*(?=[A-Za-z0-9_]+\()/g, ')\n')
+
+    // clean spacing
     .replace(/\s-->\s+/g, ' --> ')
     .replace(/\s+/g, ' ');
 
