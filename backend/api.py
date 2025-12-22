@@ -33,7 +33,7 @@ def require_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != CAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="terraform-fix")
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="prod-2025-01")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -96,17 +96,28 @@ def extract_json_or_fences(content: str) -> Dict[str, str]:
     return out
 
 def parse_tf_resources(tf: str) -> List[dict]:
+    """
+    Safely parse Terraform code into resource objects.
+    Ignores variables/locals/data blocks that hcl2 can't handle.
+    """
     if not tf.strip():
         return []
+
+    # Pre-clean Terraform to remove unsupported expressions like ${var.name}
+    clean_tf = re.sub(r"\$\{[^}]+\}", "placeholder", tf)
+    clean_tf = re.sub(r"variable\s+\"[^\"]+\"\s+\{[\s\S]*?\}", "", clean_tf)
+    clean_tf = re.sub(r"locals\s+\{[\s\S]*?\}", "", clean_tf)
+    clean_tf = re.sub(r"data\s+\"[^\"]+\"\s+\{[\s\S]*?\}", "", clean_tf)
+
     resources = []
     try:
-        obj = hcl2.load(StringIO(tf))
+        obj = hcl2.load(StringIO(clean_tf))
         for res in obj.get("resource", []):
             for rtype, blocks in res.items():
                 for name, attrs in blocks.items():
                     resources.append({"type": rtype, "name": name, "attrs": attrs})
     except Exception as e:
-        print("⚠️ Error parsing TF:", e)
+        print("⚠️ [parse_tf_resources] Terraform parse error:", e)
     return resources
 
 # -----------------------------------------------------------------
@@ -136,13 +147,15 @@ def get_azure_price(service_name: str, sku: str, region: str="eastus") -> float:
     try:
         url = (
             f"https://prices.azure.com/api/retail/prices?"
-            f"$filter=serviceName eq '{service_name}' and armSkuName eq '{sku}' and armRegionName eq '{region}'"
+            f"$filter=serviceName eq '{service_name}' and armRegionName eq '{region}'"
         )
         r = requests.get(url, timeout=20)
         if r.status_code != 200: return 0.0
         data = r.json()
         items = data.get("Items", [])
-        return items[0].get("retailPrice", 0.0) if items else 0.0
+        if not items: return 0.0
+        # pick first retail price
+        return float(items[0].get("retailPrice", 0.0))
     except Exception:
         return 0.0
 
@@ -164,21 +177,23 @@ def get_aws_price(service_code: str, key: str, value: str) -> float:
         return 0.0
 
 # -----------------------------------------------------------------
-# Cost Estimator
+# Cost Estimator (mappings + smart fallback)
 # -----------------------------------------------------------------
 def estimate_cost(provider: str, tf: str, region: str) -> dict:
+    """
+    Production-grade cost estimator.
+    Uses mappings.yaml first, then heuristics for unmapped resources.
+    """
     resources = parse_tf_resources(tf)
     mapping = SERVICE_MAPPINGS.get(provider, {})
     total, items = 0.0, []
 
     for res in resources:
         rtype, attrs = res["type"], res["attrs"]
-        if rtype not in mapping:
-            continue
+        cfg = mapping.get(rtype, None)
 
-        cfg = mapping[rtype]
         sku = None
-        if cfg.get("attr"):
+        if cfg and cfg.get("attr"):
             parts = cfg["attr"].split(".")
             val = attrs
             for p in parts:
@@ -188,15 +203,48 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
 
         qty = int(attrs.get("count", 1))
         unit_price = 0.0
-        if provider == "azure":
-            unit_price = get_azure_price(cfg["service"], sku, region)
-        elif provider == "aws":
-            unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku)
+        billing = "monthly"
 
+        # Case 1: Found in mappings.yaml
+        if cfg:
+            if provider == "azure":
+                unit_price = get_azure_price(cfg["service"], sku or "", region)
+            elif provider == "aws":
+                unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku or "")
+            billing = cfg.get("billing", "monthly")
+
+        # Case 2: Smart fallback
+        else:
+            if provider == "azure":
+                if rtype.startswith("azurerm_virtual_machine"):
+                    unit_price = get_azure_price("Virtual Machines", "Standard_B2s", region)
+                    billing = "hourly"
+                elif rtype.startswith("azurerm_storage_account"):
+                    unit_price = get_azure_price("Storage", "Standard_LRS", region)
+                    billing = "per_gb"
+                elif rtype.startswith("azurerm_app_service"):
+                    unit_price = get_azure_price("App Service", "S1", region)
+                    billing = "hourly"
+                elif rtype.startswith("azurerm_kubernetes_cluster"):
+                    unit_price = get_azure_price("Kubernetes Service", "Standard_DS2_v2", region)
+                    billing = "hourly"
+            elif provider == "aws":
+                if rtype.startswith("aws_instance"):
+                    unit_price = get_aws_price("AmazonEC2", "instanceType", "t3.medium")
+                    billing = "hourly"
+                elif rtype.startswith("aws_s3_bucket"):
+                    unit_price = get_aws_price("AmazonS3", "storageClass", "Standard")
+                    billing = "per_gb"
+                elif rtype.startswith("aws_lambda_function"):
+                    unit_price = get_aws_price("AWSLambda", "usagetype", "Lambda-GB-Second")
+                elif rtype.startswith("aws_eks_cluster"):
+                    unit_price = get_aws_price("AmazonEKS", "usagetype", "EKS-Cluster")
+
+        # Compute monthly cost
         monthly = 0.0
-        if cfg["billing"] == "hourly":
+        if billing == "hourly":
             monthly = unit_price * 730 * qty
-        elif cfg["billing"] == "per_gb":
+        elif billing == "per_gb":
             size = int(attrs.get("storage_gb", 100))
             monthly = unit_price * size * qty
         else:
@@ -206,13 +254,15 @@ def estimate_cost(provider: str, tf: str, region: str) -> dict:
         items.append({
             "cloud": provider,
             "resource": rtype,
-            "sku": sku,
+            "sku": sku or "inferred",
             "qty": qty,
             "region": region,
             "unit_monthly": round(monthly/qty, 2) if qty else 0,
             "monthly": round(monthly, 2)
         })
-    return {"currency":"USD", "total_estimate": round(total, 2), "items": items}
+
+    print(f"💰 [{provider}] total resources={len(items)}, total_estimate={total:.2f}")
+    return {"currency": "USD", "total_estimate": round(total, 2), "items": items}
 
 # -----------------------------------------------------------------
 # Confluence Builder
@@ -286,6 +336,7 @@ def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key
 
     cost = estimate_cost(provider, tf, region)
     confluence_doc = make_confluence_doc(app_name, diagram, tf, cost, provider)
+    print("📊 Final cost estimate:", cost)
 
     return {"diagram":diagram,"terraform":tf,"cost":cost,"confluence_doc":confluence_doc}
 
