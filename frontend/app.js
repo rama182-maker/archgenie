@@ -1,4 +1,6 @@
-// ✅ Setup
+// Mermaid init (we render manually via API)
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' }); // use loose to allow classDefs
+
 const el = (id) => document.getElementById(id);
 const appNameInput = el('appName');
 const promptInput  = el('prompt');
@@ -20,12 +22,18 @@ const btnCopyConf  = el('btnCopyConfluence');
 const btnDlConf    = el('btnDlConfluence');
 const btnCsv       = el('btnCsv');
 
-let lastSvg = '', lastDiagram = '', lastTf = '', lastCost = null, lastConfluence = '';
+let lastSvg = '';
+let lastDiagram = '';
+let lastTf = '';
+let lastCost = null;
+let lastConfluence = '';
 
-function escapeHtml(s) {
-  return (s || '').replace(/[&<>"]/g, c => (
-    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]
-  ));
+function lastMileSanitize(diagram) {
+  if (!diagram) return '';
+  diagram = diagram.replace(/^```mermaid\s*/i, '').replace(/```$/, ''); // strip fences
+  diagram = diagram.replace(/^(\s*subgraph[^\n;]*);+\s*$/gm, '$1');
+  diagram = diagram.replace(/(\]|\))\s*(?=[A-Za-z0-9_]+\s*(?:-|\.))/g, '$1\n');
+  return diagram.trim();
 }
 
 async function callMcp() {
@@ -33,7 +41,7 @@ async function callMcp() {
   const prompt   = promptInput.value.trim();
   const region   = regionInput.value.trim();
   const apiKey   = apiKeyInput.value.trim();
-  const provider = providerInput.value.toLowerCase();
+  const provider = providerInput ? providerInput.value.toLowerCase() : "azure";
 
   if (!apiKey) {
     statusEl.textContent = 'Please enter your x-api-key.';
@@ -54,15 +62,20 @@ async function callMcp() {
       body: JSON.stringify(body)
     });
 
-    if (!res.ok) throw new Error(`Backend error (${res.status})`);
-    const data = await res.json();
+    if (!res.ok) {
+      const errText = await res.text();
+      diagramHost.innerHTML = `<div class="error">${escapeHtml(errText)}</div>`;
+      throw new Error(`Backend error (${res.status})`);
+    }
 
+    const data = await res.json();
     lastDiagram    = (data.diagram || '').trim();
     lastTf         = (data.terraform || '').trim();
     lastCost       = data.cost || null;
     lastConfluence = (data.confluence_doc || '').trim();
 
-    await renderMermaidToSvg(lastDiagram);
+    const safeDiagram = lastMileSanitize(lastDiagram);
+    await renderMermaidToSvg(safeDiagram);
     renderTerraform(lastTf);
     renderPricing(lastCost);
     renderConfluence(lastConfluence);
@@ -71,66 +84,69 @@ async function callMcp() {
   } catch (e) {
     console.error(e);
     statusEl.textContent = e.message || 'Request failed.';
-    diagramHost.innerHTML = `<pre>${escapeHtml(lastDiagram || '(no diagram)')}</pre>`;
+    diagramHost.innerHTML = `<div class="error">❌ Unable to render diagram</div>`;
   } finally {
     btnGenerate.disabled = false;
   }
 }
 
-// ✅ Render diagram visually using Mermaid
 async function renderMermaidToSvg(diagramText) {
   const id = 'arch-' + Math.random().toString(36).slice(2, 9);
-  try {
-    let diagram = diagramText.trim();
-    if (!diagram.toLowerCase().startsWith('graph') && !diagram.toLowerCase().startsWith('flowchart')) {
-      diagram = 'flowchart LR\n' + diagram;
-    }
-    const { svg } = await mermaid.render(id, diagram);
-    diagramHost.innerHTML = svg;
 
-    const svgEl = diagramHost.querySelector('svg');
-    if (svgEl) {
-      svgEl.setAttribute('width', '100%');
-      svgEl.style.maxHeight = '600px';
-    }
+  // Sanitize: strip only unsupported stuff
+  const cleaned = diagramText
+    .split("\n")
+    .filter(line => !line.trim().startsWith("classDef") && !line.trim().startsWith("style"))
+    .join("\n");
+
+  try {
+    const { svg } = await mermaid.render(id, cleaned);
     lastSvg = svg;
+    diagramHost.innerHTML = svg;
+    diagramHost.querySelector('svg')?.setAttribute('width', '100%');
   } catch (err) {
     console.error('Mermaid render error', err);
-    diagramHost.innerHTML = `<pre class="mermaid">${escapeHtml(diagramText)}</pre>`;
+    // fallback: let Mermaid auto-render
+    diagramHost.innerHTML = `<div class="mermaid">${cleaned}</div>`;
+    mermaid.contentLoaded();
   }
 }
 
 function renderTerraform(tf) { tfOut.value = tf || ''; }
 
 function renderPricing(costObj) {
-  if (!costObj || !Array.isArray(costObj.items)) {
+  if (!costObj || !Array.isArray(costObj.items) || !costObj.items.length) {
     pricingDiv.innerHTML = '<p class="muted">No cost data.</p>';
     return;
   }
   const rows = costObj.items.map(it => `
       <tr>
-        <td>${it.cloud}</td>
-        <td>${it.resource}</td>
-        <td>${it.sku || ''}</td>
-        <td>${it.region || ''}</td>
+        <td>${String(it.cloud || '')}</td>
+        <td>${String(it.resource || it.service || '')}</td>
+        <td>${escapeHtml(String(it.sku || ''))}</td>
+        <td>${escapeHtml(String(it.region || ''))}</td>
         <td style="text-align:right">${it.qty}</td>
-        <td style="text-align:right">$${(it.unit_monthly || 0).toFixed(2)}</td>
-        <td style="text-align:right">$${(it.monthly || 0).toFixed(2)}</td>
+        <td style="text-align:right">$${Number(it.unit_monthly || 0).toFixed(2)}</td>
+        <td style="text-align:right">$${Number(it.monthly || 0).toFixed(2)}</td>
       </tr>`).join('');
-  const total = (costObj.total_estimate || 0).toFixed(2);
+  const total = Number(costObj.total_estimate || 0).toFixed(2);
   pricingDiv.innerHTML = `
     <table>
-      <thead><tr>
-        <th>Cloud</th><th>Resource</th><th>SKU</th><th>Region</th>
-        <th style="text-align:right">Qty</th>
-        <th style="text-align:right">Unit/Month</th>
-        <th style="text-align:right">Monthly</th>
-      </tr></thead>
+      <thead>
+        <tr>
+          <th>Cloud</th><th>Resource</th><th>SKU</th><th>Region</th>
+          <th style="text-align:right">Qty</th>
+          <th style="text-align:right">Unit/Month</th>
+          <th style="text-align:right">Monthly</th>
+        </tr>
+      </thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr>
-        <td colspan="6" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
-        <td style="text-align:right">$${total}</td>
-      </tr></tfoot>
+      <tfoot>
+        <tr>
+          <td colspan="6" style="text-align:right">Total (${costObj.currency || 'USD'})</td>
+          <td style="text-align:right"><b>$${total}</b></td>
+        </tr>
+      </tfoot>
     </table>`;
 }
 
@@ -141,34 +157,31 @@ function renderConfluence(text) {
   btnDlConf.style.display   = text ? 'inline-block' : 'none';
 }
 
-// ✅ Event Listeners
-btnGenerate.addEventListener('click', callMcp);
-btnCopyTf.addEventListener('click', async () => {
-  await navigator.clipboard.writeText(tfOut.value || '');
-  btnCopyTf.textContent = 'Copied!';
-  setTimeout(() => btnCopyTf.textContent = 'Copy', 1000);
-});
-btnDlTf.addEventListener('click', () => {
-  const blob = new Blob([tfOut.value], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'main.tf';
-  a.click();
-});
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"]/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]
+  ));
+}
+
+// === Buttons ===
 btnSvg.addEventListener('click', () => {
   if (!lastSvg) return;
-  const blob = new Blob([lastSvg], { type: 'image/svg+xml' });
+  const blob = new Blob([lastSvg], { type: 'image/svg+xml;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'archgenie-diagram.svg';
-  a.click();
+  a.click(); URL.revokeObjectURL(a.href);
 });
+
 btnPng.addEventListener('click', async () => {
   if (!lastSvg) return;
   const svgEl = new DOMParser().parseFromString(lastSvg, 'image/svg+xml').documentElement;
+  const svgText = new XMLSerializer().serializeToString(svgEl);
   const canvas = document.createElement('canvas');
-  const bbox = diagramHost.querySelector('svg')?.getBBox?.() || {width:1024,height:768};
-  canvas.width = bbox.width; canvas.height = bbox.height;
+  const bbox = diagramHost.querySelector('svg')?.getBBox?.();
+  const width = Math.max(1024, (bbox?.width || 1024));
+  const height = Math.max(768, (bbox?.height || 768));
+  canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d');
   const img = new Image();
   img.onload = () => {
@@ -178,21 +191,71 @@ btnPng.addEventListener('click', async () => {
     a.download = 'archgenie-diagram.png';
     a.click();
   };
-  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(lastSvg);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
 });
-btnCsv.addEventListener('click', async () => {
-  const appName = appNameInput.value.trim() || 'archgenie-app';
-  const region = regionInput.value.trim() || 'eastus';
-  const provider = providerInput.value.toLowerCase();
-  const payload = { app_name: appName, region, terraform: tfOut.value };
-  const resp = await fetch(`/api/mcp/${provider}/cost-csv`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKeyInput.value.trim() },
-    body: JSON.stringify(payload)
-  });
-  const blob = await resp.blob();
+
+btnCopyTf.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(tfOut.value || '');
+    btnCopyTf.textContent = 'Copied!';
+    setTimeout(() => btnCopyTf.textContent = 'Copy', 1000);
+  } catch(e) { console.error(e); }
+});
+
+btnDlTf.addEventListener('click', () => {
+  const blob = new Blob([tfOut.value || ''], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${appName.replace(/\s+/g,'_')}_${provider}_costs.csv`;
-  a.click();
+  a.download = 'main.tf';
+  a.click(); URL.revokeObjectURL(a.href);
 });
+
+btnCopyConf.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(confluenceBox.value || '');
+    btnCopyConf.textContent = 'Copied!';
+    setTimeout(() => btnCopyConf.textContent = 'Copy', 1000);
+  } catch(e) { console.error(e); }
+});
+
+btnDlConf.addEventListener('click', () => {
+  const blob = new Blob([confluenceBox.value || ''], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'archgenie_confluence.txt';
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+btnCsv?.addEventListener('click', async () => {
+  const appName  = appNameInput.value.trim() || 'archgenie-app';
+  const region   = regionInput.value.trim() || 'eastus';
+  const provider = providerInput ? providerInput.value.toLowerCase() : "azure";
+
+  const payload = {
+    app_name: appName,
+    region: region,
+    terraform: tfOut.value || ""
+  };
+
+  try {
+    const resp = await fetch(`/api/mcp/${provider}/cost-csv`, {
+      method: 'POST',
+      headers: { "Content-Type": "application/json", "x-api-key": apiKeyInput.value.trim() },
+      body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) throw new Error("Failed to download CSV");
+
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${appName.replace(/\s+/g,'_')}_${provider}_costs.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+
+  } catch (err) {
+    alert("Error downloading CSV: " + err.message);
+  }
+});
+
+btnGenerate.addEventListener('click', callMcp);
