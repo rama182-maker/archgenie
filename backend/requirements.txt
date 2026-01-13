@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn==0.32.0
+python-dotenv==1.0.1
+requests==2.32.3
+boto3==1.35.18
+PyYAML==6.0.2
+python-hcl2==4.3.5
+pydantic==2.9.2
+pydantic-core==2.23.4

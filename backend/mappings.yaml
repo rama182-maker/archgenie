@@ -1,0 +1,95 @@
+aws:
+  aws_instance:
+    service_code: "AmazonEC2"
+    key: "instanceType"
+    billing: "hourly"
+    attr: "instance_type"
+
+  aws_lb:
+    service_code: "AmazonElasticLoadBalancing"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "name"
+
+  aws_autoscaling_group:
+    service_code: "AmazonEC2"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "name"
+
+  aws_launch_configuration:
+    service_code: "AmazonEC2"
+    key: "instanceType"
+    billing: "hourly"
+    attr: "instance_type"
+
+  aws_db_instance:
+    service_code: "AmazonRDS"
+    key: "databaseEngine"
+    billing: "hourly"
+    attr: "engine"
+
+  aws_s3_bucket:
+    service_code: "AmazonS3"
+    key: "usagetype"
+    billing: "per_gb"
+    attr: "storage_gb"
+
+  aws_efs_file_system:
+    service_code: "AmazonEFS"
+    key: "usagetype"
+    billing: "per_gb"
+    attr: "storage_gb"
+
+  aws_elasticache_cluster:
+    service_code: "AmazonElastiCache"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "engine"
+
+  aws_nat_gateway:
+    service_code: "AmazonVPC"
+    key: "usagetype"
+    billing: "hourly"
+    attr: "id"
+
+azure:
+  azurerm_linux_virtual_machine:
+    service: "Virtual Machines"
+    billing: "hourly"
+    attr: "size"
+
+  azurerm_windows_virtual_machine:
+    service: "Virtual Machines"
+    billing: "hourly"
+    attr: "size"
+
+  azurerm_app_service:
+    service: "App Service"
+    billing: "hourly"
+    attr: "sku"
+
+  azurerm_sql_database:
+    service: "SQL Database"
+    billing: "hourly"
+    attr: "sku_name"
+
+  azurerm_storage_account:
+    service: "Storage"
+    billing: "per_gb"
+    attr: "account_tier"
+
+  azurerm_postgresql_flexible_server:
+    service: "Azure Database for PostgreSQL flexible server"
+    billing: "hourly"
+    attr: "sku_name"
+
+  azurerm_redis_cache:
+    service: "Redis Cache"
+    billing: "hourly"
+    attr: "sku_name"
+
+  azurerm_kubernetes_cluster:
+    service: "Azure Kubernetes Service"
+    billing: "hourly"
+    attr: "sku_tier"

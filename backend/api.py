@@ -1,0 +1,369 @@
+import os, re, json, requests, csv, subprocess, boto3, hcl2, yaml
+from typing import List, Dict, Any
+from io import StringIO
+from fastapi import FastAPI, Depends, Header, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
+
+load_dotenv()
+
+CAL_API_KEY = os.getenv("CAL_API_KEY", "super-secret-key")
+
+# === Azure Config ===
+AZURE_OPENAI_ENDPOINT    = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
+AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_OPENAI_FORCE_JSON  = os.getenv("AZURE_OPENAI_FORCE_JSON", "true").lower() == "true"
+
+# === AWS Config ===
+AWS_MCP_HOST = os.getenv("AWS_MCP_HOST", "127.0.0.1")
+AWS_MCP_PORT = os.getenv("AWS_MCP_PORT", "3333")
+
+DEFAULT_REGION = "eastus"
+FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
+
+# === Load Service Mappings ===
+with open("mappings.yaml", "r") as f:
+    SERVICE_MAPPINGS = yaml.safe_load(f)
+
+# === FastAPI App ===
+def require_api_key(x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != CAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+app = FastAPI(title="ArchGenie Multi-Cloud Backend", version="prod-2025-01")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+@app.get("/")
+def health():
+    return {"status": "ok"}
+
+# -----------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------
+def sanitize_mermaid(src: str) -> str:
+    if not src:
+        return "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
+    s = src.strip()
+    header_re = re.compile(r'^(graph|flowchart)\s+(TD|LR)\b', flags=re.I|re.M)
+    if header_re.search(s):
+        s = header_re.sub("graph TD", s, count=1)
+    else:
+        s = "graph TD\n" + s
+    lines = []
+    for line in s.splitlines():
+        just = re.sub(r';\s*$', '', line.strip())
+        if just: lines.append(just)
+    return "\n".join(lines) + ("\n" if not s.endswith("\n") else "")
+
+def strip_fences(text: str) -> str:
+    if not text: return ""
+    s = text.strip()
+    m = re.match(r"^```.*?\n([\s\S]*?)```$", s)
+    return m.group(1).strip() if m else s
+
+def extract_json_or_fences(content: str) -> Dict[str, str]:
+    """Extract diagram + terraform safely from JSON or fenced text."""
+    out = {"diagram": "", "terraform": ""}
+    try:
+        obj = json.loads(content)
+        out["diagram"] = strip_fences(obj.get("diagram", ""))
+        out["terraform"] = strip_fences(obj.get("terraform", ""))
+        return out
+    except Exception:
+        pass
+
+    mermaid_match = re.search(r"```(?:mermaid)?\s*([\s\S]*?)```", content, re.I)
+    tf_match = re.search(r"```(?:terraform|hcl)?\s*([\s\S]*?)```", content, re.I)
+    if mermaid_match:
+        out["diagram"] = mermaid_match.group(1).strip()
+    if tf_match:
+        out["terraform"] = tf_match.group(1).strip()
+
+    if not out["terraform"]:
+        m = re.search(r'(resource\s+"[a-zA-Z0-9_]+"[\s\S]+)', content, re.I)
+        if m:
+            out["terraform"] = m.group(1).strip()
+
+    out["diagram"] = out["diagram"].strip()
+    out["terraform"] = out["terraform"].strip()
+    return out
+
+def parse_tf_resources(tf: str) -> List[dict]:
+    """
+    Safely parse Terraform code into resource objects.
+    Ignores variables/locals/data blocks that hcl2 can't handle.
+    """
+    if not tf.strip():
+        return []
+
+    # Pre-clean Terraform to remove unsupported expressions like ${var.name}
+    clean_tf = re.sub(r"\$\{[^}]+\}", "placeholder", tf)
+    clean_tf = re.sub(r"variable\s+\"[^\"]+\"\s+\{[\s\S]*?\}", "", clean_tf)
+    clean_tf = re.sub(r"locals\s+\{[\s\S]*?\}", "", clean_tf)
+    clean_tf = re.sub(r"data\s+\"[^\"]+\"\s+\{[\s\S]*?\}", "", clean_tf)
+
+    resources = []
+    try:
+        obj = hcl2.load(StringIO(clean_tf))
+        for res in obj.get("resource", []):
+            for rtype, blocks in res.items():
+                for name, attrs in blocks.items():
+                    resources.append({"type": rtype, "name": name, "attrs": attrs})
+    except Exception as e:
+        print("⚠️ [parse_tf_resources] Terraform parse error:", e)
+    return resources
+
+# -----------------------------------------------------------------
+# Azure OpenAI Chat
+# -----------------------------------------------------------------
+def aoai_chat(messages: List[Dict[str,str]]) -> Dict[str,Any]:
+    if not (AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT):
+        raise HTTPException(status_code=500, detail="Azure OpenAI not configured")
+
+    url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+    headers = {"Content-Type":"application/json","api-key":AZURE_OPENAI_API_KEY}
+    body = {"messages": messages, "temperature":0.2}
+    if AZURE_OPENAI_FORCE_JSON:
+        body["response_format"] = {"type":"json_object"}
+
+    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=90)
+    print("🧠 AOAI raw status:", r.status_code)
+    if r.status_code >= 300:
+        print("❌ AOAI error body:", r.text)
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return r.json()
+
+# -----------------------------------------------------------------
+# Pricing APIs
+# -----------------------------------------------------------------
+def get_azure_price(service_name: str, sku: str, region: str="eastus") -> float:
+    try:
+        url = (
+            f"https://prices.azure.com/api/retail/prices?"
+            f"$filter=serviceName eq '{service_name}' and armRegionName eq '{region}'"
+        )
+        r = requests.get(url, timeout=20)
+        if r.status_code != 200: return 0.0
+        data = r.json()
+        items = data.get("Items", [])
+        if not items: return 0.0
+        # pick first retail price
+        return float(items[0].get("retailPrice", 0.0))
+    except Exception:
+        return 0.0
+
+def get_aws_price(service_code: str, key: str, value: str) -> float:
+    client = boto3.client("pricing", region_name="us-east-1")
+    try:
+        resp = client.get_products(
+            ServiceCode=service_code,
+            Filters=[{"Type": "TERM_MATCH", "Field": key, "Value": value}],
+            MaxResults=1
+        )
+        if not resp["PriceList"]: return 0.0
+        terms = json.loads(resp["PriceList"][0])
+        od = list(terms["terms"]["OnDemand"].values())[0]
+        price_dims = list(od["priceDimensions"].values())[0]
+        return float(price_dims["pricePerUnit"]["USD"])
+    except Exception as e:
+        print("⚠️ AWS pricing error:", e)
+        return 0.0
+
+# -----------------------------------------------------------------
+# Cost Estimator (mappings + smart fallback)
+# -----------------------------------------------------------------
+def estimate_cost(provider: str, tf: str, region: str) -> dict:
+    """
+    Production-grade cost estimator.
+    Uses mappings.yaml first, then heuristics for unmapped resources.
+    """
+    resources = parse_tf_resources(tf)
+    mapping = SERVICE_MAPPINGS.get(provider, {})
+    total, items = 0.0, []
+
+    for res in resources:
+        rtype, attrs = res["type"], res["attrs"]
+        cfg = mapping.get(rtype, None)
+
+        sku = None
+        if cfg and cfg.get("attr"):
+            parts = cfg["attr"].split(".")
+            val = attrs
+            for p in parts:
+                if isinstance(val, dict):
+                    val = val.get(p)
+            sku = val
+
+        qty = int(attrs.get("count", 1))
+        unit_price = 0.0
+        billing = "monthly"
+
+        # Case 1: Found in mappings.yaml
+        if cfg:
+            if provider == "azure":
+                unit_price = get_azure_price(cfg["service"], sku or "", region)
+            elif provider == "aws":
+                unit_price = get_aws_price(cfg["service_code"], cfg["key"], sku or "")
+            billing = cfg.get("billing", "monthly")
+
+        # Case 2: Smart fallback
+        else:
+            if provider == "azure":
+                if rtype.startswith("azurerm_virtual_machine"):
+                    unit_price = get_azure_price("Virtual Machines", "Standard_B2s", region)
+                    billing = "hourly"
+                elif rtype.startswith("azurerm_storage_account"):
+                    unit_price = get_azure_price("Storage", "Standard_LRS", region)
+                    billing = "per_gb"
+                elif rtype.startswith("azurerm_app_service"):
+                    unit_price = get_azure_price("App Service", "S1", region)
+                    billing = "hourly"
+                elif rtype.startswith("azurerm_kubernetes_cluster"):
+                    unit_price = get_azure_price("Kubernetes Service", "Standard_DS2_v2", region)
+                    billing = "hourly"
+            elif provider == "aws":
+                if rtype.startswith("aws_instance"):
+                    unit_price = get_aws_price("AmazonEC2", "instanceType", "t3.medium")
+                    billing = "hourly"
+                elif rtype.startswith("aws_s3_bucket"):
+                    unit_price = get_aws_price("AmazonS3", "storageClass", "Standard")
+                    billing = "per_gb"
+                elif rtype.startswith("aws_lambda_function"):
+                    unit_price = get_aws_price("AWSLambda", "usagetype", "Lambda-GB-Second")
+                elif rtype.startswith("aws_eks_cluster"):
+                    unit_price = get_aws_price("AmazonEKS", "usagetype", "EKS-Cluster")
+
+        # Compute monthly cost
+        monthly = 0.0
+        if billing == "hourly":
+            monthly = unit_price * 730 * qty
+        elif billing == "per_gb":
+            size = int(attrs.get("storage_gb", 100))
+            monthly = unit_price * size * qty
+        else:
+            monthly = unit_price * qty
+
+        total += monthly
+        items.append({
+            "cloud": provider,
+            "resource": rtype,
+            "sku": sku or "inferred",
+            "qty": qty,
+            "region": region,
+            "unit_monthly": round(monthly/qty, 2) if qty else 0,
+            "monthly": round(monthly, 2)
+        })
+
+    print(f"💰 [{provider}] total resources={len(items)}, total_estimate={total:.2f}")
+    return {"currency": "USD", "total_estimate": round(total, 2), "items": items}
+
+# -----------------------------------------------------------------
+# Confluence Builder
+# -----------------------------------------------------------------
+def make_confluence_doc(app_name: str, diagram: str, terraform: str, cost: dict, cloud: str) -> str:
+    lines = []
+    lines.append(f"h1. {app_name} – {cloud.upper()} Architecture Documentation\n")
+    lines.append("h2. Architecture Diagram")
+    lines.append("{code:mermaid}")
+    lines.append(diagram.strip())
+    lines.append("{code}\n")
+    lines.append("h2. Terraform Code")
+    lines.append("{code}")
+    lines.append(terraform.strip() or "# (no terraform)")
+    lines.append("{code}\n")
+    lines.append("h2. Estimated Monthly Cost")
+    if cost and cost.get("items"):
+        lines.append("|| Cloud || Resource || SKU || Qty || Unit/Month || Monthly ||")
+        for it in cost["items"]:
+            lines.append(f"| {it.get('cloud','')} | {it.get('resource','')} | {it.get('sku','')} | {it.get('qty',1)} | ${it.get('unit_monthly',0)} | ${it.get('monthly',0)} |")
+        lines.append(f"*Total ({cost.get('currency','USD')}):* ${cost.get('total_estimate',0)}")
+    else:
+        lines.append("No cost data available.")
+    return "\n".join(lines)
+
+# -----------------------------------------------------------------
+# Endpoints
+# -----------------------------------------------------------------
+@app.post("/mcp/{provider}/diagram-tf")
+def generate(provider: str, payload: dict = Body(...), _=Depends(require_api_key)):
+    app_name = payload.get("app_name","3-tier web app")
+    extra = payload.get("prompt","")
+    region = payload.get("region", DEFAULT_REGION)
+    provider = provider.lower()
+
+    if provider not in ["azure","aws"]:
+        raise HTTPException(status_code=400, detail="Invalid provider. Use azure or aws.")
+
+    try:
+        if provider == "azure":
+            system = (
+                "You are ArchGenie's Azure Infrastructure Generator running on GPT-4o. "
+                "Generate BOTH: (1) a clean Mermaid diagram describing the Azure architecture, "
+                "and (2) valid Terraform HCL code for the same setup. "
+                "Return ONLY a strict JSON object with two keys: diagram and terraform."
+            )
+            user = f"Create Azure architecture for {app_name}. Extra: {extra}. Region: {region}."
+            result = aoai_chat([{"role":"system","content":system},{"role":"user","content":user}])
+            print("🧠 AOAI raw:", str(result)[:500])
+            content = result["choices"][0]["message"]["content"]
+            parsed = extract_json_or_fences(content)
+        else:
+            cmd = [
+                "npm", "exec", "mcp-proxy",
+                "uvx", "awslabs.aws-diagram-mcp-server",
+                "--host", AWS_MCP_HOST, "--port", AWS_MCP_PORT,
+                "--input", f"Create AWS architecture for {app_name}. Extra: {extra}. Region: {region}."
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail=f"AWS MCP error: {result.stderr}")
+            parsed = extract_json_or_fences(result.stdout)
+
+        diagram = sanitize_mermaid(parsed.get("diagram",""))
+        tf = strip_fences(parsed.get("terraform",""))
+        if not tf.strip(): tf = "# Terraform failed; check backend logs"
+    except Exception:
+        if not FAIL_OPEN: raise
+        diagram = "graph TD\nA[Internet] --> B[App]\nB --> C[Database]\n"
+        tf = "# Terraform failed; check backend logs"
+
+    cost = estimate_cost(provider, tf, region)
+    confluence_doc = make_confluence_doc(app_name, diagram, tf, cost, provider)
+    print("📊 Final cost estimate:", cost)
+
+    return {"diagram":diagram,"terraform":tf,"cost":cost,"confluence_doc":confluence_doc}
+
+@app.post("/mcp/{provider}/cost-csv")
+def cost_csv(provider: str, payload: dict = Body(...), _=Depends(require_api_key)):
+    app_name = payload.get("app_name","3-tier web app")
+    region = payload.get("region", DEFAULT_REGION)
+    tf = payload.get("terraform","")
+
+    cost = estimate_cost(provider, tf, region)
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Cloud","Resource","SKU","Region","Qty","Unit/Month (USD)","Monthly (USD)"])
+    for it in cost["items"]:
+        writer.writerow([
+            it.get("cloud",""),
+            it.get("resource",""),
+            it.get("sku",""),
+            it.get("region",""),
+            it.get("qty",1),
+            it.get("unit_monthly",0),
+            it.get("monthly",0),
+        ])
+    writer.writerow([]); writer.writerow(["Total","","","","","",cost.get("total_estimate",0)])
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={app_name.replace(' ','_')}_{provider}_costs.csv"}
+    )
